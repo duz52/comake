@@ -7,12 +7,8 @@ import {
 } from './operations';
 import { downloadPptx } from './pptx-download';
 import { agentActor } from './actors';
-import {
-  slideTitleText,
-  PresentationStore,
-  type DispatchFailure,
-  type PresentationSnapshot,
-} from './store';
+import { slideTitleText, type DispatchFailure } from './document';
+import { PresentationStore, type PresentationSnapshot } from './store';
 import type { ChangeSet } from '../../types/presentation';
 
 /**

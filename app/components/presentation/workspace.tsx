@@ -10,9 +10,9 @@ import { agentActor, humanActor } from '../../lib/presentation/actors';
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
 import { presentationSlidePath } from '../../lib/presentation/location';
 import { downloadPptx } from '../../lib/presentation/pptx-download';
+import { slideTitleText } from '../../lib/presentation/document';
 import {
   PresentationStore,
-  slideTitleText,
   type PresentationSnapshot,
 } from '../../lib/presentation/store';
 import { useWebMcp } from '../../lib/presentation/webmcp';
