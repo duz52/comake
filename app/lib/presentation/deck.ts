@@ -1,128 +1,20 @@
+import type {
+  Frame,
+  Presentation,
+  PresentationElement,
+  ShapeElement,
+  Slide,
+  TextElement,
+  TextStyle,
+} from '../../types/presentation';
+
 export const SLIDE_WIDTH = 960;
 export const SLIDE_HEIGHT = 540;
 
-export type Actor =
-  | { id: 'jerry'; kind: 'human'; name: 'Jerry' }
-  | { id: 'gpt'; kind: 'agent'; name: 'GPT' }
-  | { id: 'system'; kind: 'system'; name: 'Comake' };
-
-export interface Frame {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface TextStyle {
-  align?: 'left' | 'center' | 'right';
-  color: string;
-  fontFamily: string;
-  fontSize: number;
-  fontWeight?: 400 | 500 | 600 | 700 | 800;
-  letterSpacing?: number;
-  lineHeight?: number;
-  textTransform?: 'none' | 'uppercase';
-}
-
-interface ElementBase {
-  id: string;
-  frame: Frame;
-  locked?: boolean;
-  name: string;
-  rotation?: number;
-}
-
-export interface TextElement extends ElementBase {
-  kind: 'text';
-  style: TextStyle;
-  text: string;
-}
-
-export interface ShapeElement extends ElementBase {
-  fill: string;
-  kind: 'shape';
-  radius?: number;
-}
-
-export type PresentationElement = TextElement | ShapeElement;
-
-export interface Slide {
-  background: string;
-  elementOrder: string[];
-  elements: Record<string, PresentationElement>;
-  id: string;
-  name: string;
-  notes?: string;
-}
-
-export interface Presentation {
-  id: string;
-  revision: number;
-  size: {
-    height: typeof SLIDE_HEIGHT;
-    width: typeof SLIDE_WIDTH;
-  };
-  slideOrder: string[];
-  slides: Record<string, Slide>;
-  title: string;
-}
-
-export interface Comment {
-  actor: Actor;
-  body: string;
-  createdAt: string;
-  elementId?: string;
-  id: string;
-  resolved: boolean;
-  slideId: string;
-}
-
-export type PresentationOperation =
-  | {
-      elementId: string;
-      expectedText?: string;
-      slideId: string;
-      text: string;
-      type: 'update_text';
-    }
-  | {
-      elementId: string;
-      expectedFrame?: Frame;
-      frame: Frame;
-      slideId: string;
-      type: 'update_frame';
-    }
-  | {
-      element: PresentationElement;
-      slideId: string;
-      type: 'create_element';
-    }
-  | {
-      elementId: string;
-      expectedElement?: PresentationElement;
-      slideId: string;
-      type: 'delete_element';
-    }
-  | {
-      comment: Comment;
-      type: 'add_comment';
-    }
-  | {
-      commentId: string;
-      expectedComment?: Comment;
-      type: 'remove_comment';
-    };
-
-export interface ChangeSet {
-  actor: Actor;
-  createdAt: string;
-  id: string;
-  inverseOperations: PresentationOperation[];
-  label: string;
-  operations: PresentationOperation[];
-  revision: number;
-  revertedAt?: string;
-}
+/** Canonical identifiers of the P0 launch workspace and its landing slide. */
+export const LAUNCH_WORKSPACE_ID = 'webmcp-launch';
+export const LAUNCH_DECK_ID = 'deck-webmcp-launch';
+export const LAUNCH_DECK_INITIAL_SLIDE_ID = 'slide-gap';
 
 function text(
   id: string,
@@ -262,7 +154,7 @@ export function createLaunchDeck(): Presentation {
     ),
   ]);
 
-  const gap = slide('slide-gap', 'The co-work gap', '#20201b', [
+  const gap = slide(LAUNCH_DECK_INITIAL_SLIDE_ID, 'The co-work gap', '#20201b', [
     text('gap-kicker', 'Kicker', { x: 70, y: 66, width: 340, height: 24 }, 'THE CO-WORK GAP / 03', labelStyle),
     text(
       'gap-title',
@@ -308,7 +200,7 @@ export function createLaunchDeck(): Presentation {
   ]);
 
   return {
-    id: 'deck-webmcp-launch',
+    id: LAUNCH_DECK_ID,
     revision: 0,
     size: { width: SLIDE_WIDTH, height: SLIDE_HEIGHT },
     slideOrder: [cover.id, problem.id, gap.id, system.id],

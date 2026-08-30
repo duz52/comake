@@ -3,7 +3,7 @@ import {
   type PresentationElement,
   type ShapeElement,
   type TextElement,
-} from './model';
+} from '../../types/presentation';
 
 interface ZipFile {
   name: string;

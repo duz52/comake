@@ -931,3 +931,12 @@ textarea:focus-visible {
     padding-bottom: 45px;
   }
 }
+
+.route-error {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  background: #171713;
+  color: #f8f2e8;
+  font-family: Inter, sans-serif;
+}

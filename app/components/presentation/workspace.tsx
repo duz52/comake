@@ -3,32 +3,23 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type CSSProperties,
   type PointerEvent,
 } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Button } from '../components/ui/button';
-import { Tooltip } from '../components/ui/tooltip';
-import type {
-  ChangeSet,
-  Frame,
-  PresentationElement,
-  ShapeElement,
-  TextElement,
-} from '../domain/model';
+import { agentActor, humanActor } from '../../lib/presentation/actors';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
+import { presentationSlidePath } from '../../lib/presentation/location';
+import { downloadPptx } from '../../lib/presentation/pptx-download';
 import {
-  actors,
   PresentationStore,
+  slideTitleText,
   type PresentationSnapshot,
-} from '../domain/presentation-store';
-import { downloadPptx } from '../client/pptx-download';
-import { useWebMcp } from '../webmcp/use-webmcp';
-
-interface DragState {
-  elementId: string;
-  frame: Frame;
-  pointer: { x: number; y: number };
-}
+} from '../../lib/presentation/store';
+import { useWebMcp } from '../../lib/presentation/webmcp';
+import type { ChangeSet, Frame, PresentationElement } from '../../types/presentation';
+import { Button } from '../ui/button';
+import { Tooltip } from '../ui/tooltip';
+import { SlideArtwork, type DragState } from './slide-artwork';
 
 function usePresentation(store: PresentationStore): PresentationSnapshot {
   return useSyncExternalStore(
@@ -38,152 +29,14 @@ function usePresentation(store: PresentationStore): PresentationSnapshot {
   );
 }
 
-function frameStyle(frame: Frame): CSSProperties {
-  return {
-    left: `${(frame.x / 960) * 100}%`,
-    top: `${(frame.y / 540) * 100}%`,
-    width: `${(frame.width / 960) * 100}%`,
-    height: `${(frame.height / 540) * 100}%`,
-  };
-}
-
-function visibleFrame(element: PresentationElement, drag: DragState | null): Frame {
-  return drag?.elementId === element.id ? drag.frame : element.frame;
-}
-
-function slideTitle(snapshot: PresentationSnapshot, slideId: string): string {
-  const slide = snapshot.presentation.slides[slideId];
-  const title = slide.elementOrder
-    .map((elementId) => slide.elements[elementId])
-    .find((element) => element.name === 'Title');
-  return title?.kind === 'text' ? title.text.replace('\n', ' ') : slide.name;
-}
-
 function formatChangeTime(value: string): string {
   const date = new Date(value);
   return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(date);
 }
 
-function TextArtwork({
-  element,
-  selected,
-  frame,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  element: TextElement;
-  frame: Frame;
-  onPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerMove?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerUp?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  selected?: boolean;
-}) {
-  const { style } = element;
-  return (
-    <div
-      aria-label={element.name}
-      className={`slide-element text-element${selected ? ' is-selected' : ''}`}
-      data-element-id={element.id}
-      onPointerDown={onPointerDown ? (event) => onPointerDown(event, element) : undefined}
-      onPointerMove={onPointerMove ? (event) => onPointerMove(event, element) : undefined}
-      onPointerUp={onPointerUp ? (event) => onPointerUp(event, element) : undefined}
-      style={{
-        ...frameStyle(frame),
-        color: style.color,
-        fontFamily: style.fontFamily,
-        fontSize: `${style.fontSize / 10}cqw`,
-        fontWeight: style.fontWeight,
-        letterSpacing: style.letterSpacing ? `${style.letterSpacing / 10}cqw` : undefined,
-        lineHeight: style.lineHeight,
-        textAlign: style.align,
-        textTransform: style.textTransform,
-      }}
-    >
-      {element.text}
-    </div>
-  );
-}
-
-function ShapeArtwork({
-  element,
-  selected,
-  frame,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  element: ShapeElement;
-  frame: Frame;
-  onPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerMove?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerUp?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  selected?: boolean;
-}) {
-  return (
-    <div
-      aria-label={element.name}
-      className={`slide-element shape-element${selected ? ' is-selected' : ''}`}
-      data-element-id={element.id}
-      onPointerDown={onPointerDown ? (event) => onPointerDown(event, element) : undefined}
-      onPointerMove={onPointerMove ? (event) => onPointerMove(event, element) : undefined}
-      onPointerUp={onPointerUp ? (event) => onPointerUp(event, element) : undefined}
-      style={{
-        ...frameStyle(frame),
-        background: element.fill,
-        borderRadius: `${element.radius ?? 0}px`,
-      }}
-    />
-  );
-}
-
-function SlideArtwork({
-  snapshot,
-  slideId,
-  drag,
-  interactive = false,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  drag?: DragState | null;
-  interactive?: boolean;
-  onPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerMove?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerUp?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  slideId: string;
-  snapshot: PresentationSnapshot;
-}) {
+function slideLabel(snapshot: PresentationSnapshot, slideId: string): string {
   const slide = snapshot.presentation.slides[slideId];
-  const selectedElementId = interactive ? snapshot.session.selectedElementId : undefined;
-  return (
-    <div className="slide-artwork" style={{ background: slide.background }}>
-      {slide.elementOrder.map((elementId) => {
-        const element = slide.elements[elementId];
-        const frame = visibleFrame(element, drag ?? null);
-        const handlers = interactive
-          ? { onPointerDown, onPointerMove, onPointerUp }
-          : { onPointerDown: undefined, onPointerMove: undefined, onPointerUp: undefined };
-        return element.kind === 'text' ? (
-          <TextArtwork
-            element={element}
-            frame={frame}
-            key={element.id}
-            selected={selectedElementId === element.id}
-            {...handlers}
-          />
-        ) : (
-          <ShapeArtwork
-            element={element}
-            frame={frame}
-            key={element.id}
-            selected={selectedElementId === element.id}
-            {...handlers}
-          />
-        );
-      })}
-    </div>
-  );
+  return (slideTitleText(slide) ?? slide.name).replaceAll('\n', ' ');
 }
 
 function AgentMark() {
@@ -262,7 +115,7 @@ function demoOperations() {
       type: 'add_comment' as const,
       comment: {
         id: 'comment-pricing',
-        actor: actors.agent,
+        actor: agentActor,
         body: 'I used the shared-state principle here. Should this become the final closing line?',
         createdAt: new Date().toISOString(),
         resolved: false,
@@ -308,16 +161,13 @@ function Workspace({ store }: { store: PresentationStore }) {
       store.selectSlide(activeSlideId);
     }
     if (slideId !== activeSlideId) {
-      navigate(
-        `/workspace/webmcp-launch/presentation/${snapshot.presentation.id}/slide/${activeSlideId}`,
-        { replace: true },
-      );
+      navigate(presentationSlidePath(snapshot.presentation.id, activeSlideId), { replace: true });
     }
   }, [activeSlideId, navigate, slideId, snapshot.presentation.id, snapshot.session.activeSlideId, store]);
 
   function openSlide(nextSlideId: string): void {
     store.selectSlide(nextSlideId);
-    navigate(`/workspace/webmcp-launch/presentation/${snapshot.presentation.id}/slide/${nextSlideId}`);
+    navigate(presentationSlidePath(snapshot.presentation.id, nextSlideId));
   }
 
   function showToast(message: string): void {
@@ -344,12 +194,12 @@ function Workspace({ store }: { store: PresentationStore }) {
       return;
     }
     const bounds = canvasRef.current.getBoundingClientRect();
-    const horizontalDelta = ((event.clientX - drag.pointer.x) / bounds.width) * 960;
-    const verticalDelta = ((event.clientY - drag.pointer.y) / bounds.height) * 540;
-    const frame = {
+    const horizontalDelta = ((event.clientX - drag.pointer.x) / bounds.width) * SLIDE_WIDTH;
+    const verticalDelta = ((event.clientY - drag.pointer.y) / bounds.height) * SLIDE_HEIGHT;
+    const frame: Frame = {
       ...drag.frame,
-      x: Math.min(960 - drag.frame.width, Math.max(0, Math.round(drag.frame.x + horizontalDelta))),
-      y: Math.min(540 - drag.frame.height, Math.max(0, Math.round(drag.frame.y + verticalDelta))),
+      x: Math.min(SLIDE_WIDTH - drag.frame.width, Math.max(0, Math.round(drag.frame.x + horizontalDelta))),
+      y: Math.min(SLIDE_HEIGHT - drag.frame.height, Math.max(0, Math.round(drag.frame.y + verticalDelta))),
     };
     setDrag({ ...drag, frame });
   }
@@ -366,7 +216,7 @@ function Workspace({ store }: { store: PresentationStore }) {
       drag.frame.height !== element.frame.height;
     if (changed) {
       store.dispatch({
-        actor: actors.human,
+        actor: humanActor,
         label: `Moved ${element.name}`,
         operations: [
           {
@@ -384,7 +234,7 @@ function Workspace({ store }: { store: PresentationStore }) {
 
   function runDemoAgent(): void {
     const result = store.dispatch({
-      actor: actors.agent,
+      actor: agentActor,
       label: 'Built the co-work bridge',
       operations: demoOperations(),
     });
@@ -422,7 +272,7 @@ function Workspace({ store }: { store: PresentationStore }) {
       return;
     }
     const result = store.dispatch({
-      actor: actors.human,
+      actor: humanActor,
       label: `Edited ${selectedElement.name}`,
       operations: [
         {
@@ -677,7 +527,7 @@ function Workspace({ store }: { store: PresentationStore }) {
                   </span>
                   <p>{comment.body}</p>
                   <button onClick={() => openSlide(comment.slideId)} type="button">
-                    Go to {slideTitle(snapshot, comment.slideId)} →
+                    Go to {slideLabel(snapshot, comment.slideId)} →
                   </button>
                 </div>
               ))
