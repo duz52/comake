@@ -9,7 +9,7 @@ import { downloadPptx } from './pptx-download';
 import { agentActor } from './actors';
 import { slideTitleText, type DispatchFailure } from './document';
 import { PresentationStore, type PresentationSnapshot } from './store';
-import type { ChangeSet } from '../../types/presentation';
+import type { ChangeSet, Presentation, Slide } from '../../types/presentation';
 
 /**
  * WebMCP adapter: registers the page's self-describing tool contract on
@@ -31,6 +31,13 @@ interface RegisteredTool {
   execute: (input: unknown) => unknown | Promise<unknown>;
   inputSchema: Record<string, unknown>;
   name: string;
+  /**
+   * WebMCP imperative API metadata. `annotations.readOnlyHint: true` declares
+   * that invocation never mutates the canonical document.
+   */
+  annotations?: {
+    readOnlyHint?: boolean;
+  };
 }
 
 interface ModelContext {
@@ -108,6 +115,75 @@ function noInputSchema(): Record<string, unknown> {
   };
 }
 
+/** Canonical canvas geometry: slide-point units, origin at the top-left, x right / y down. */
+function describeCoordinateSpace(size: Presentation['size']): ToolResult {
+  return {
+    origin: 'top-left',
+    unit: 'slide-point',
+    xAxis: 'right',
+    yAxis: 'down',
+    width: size.width,
+    height: size.height,
+  };
+}
+
+function describeSlide(slideId: string, index: number, slide: Slide): ToolResult {
+  return {
+    id: slideId,
+    index,
+    name: slide.name,
+  };
+}
+
+/** Compact element record for the spatial map: geometry and content only, no text styling. */
+function spatialElementRecord(slide: Slide, elementId: string, zIndex: number): ToolResult {
+  const element = slide.elements[elementId];
+  const record: ToolResult = {
+    id: element.id,
+    kind: element.kind,
+    name: element.name,
+    frame: element.frame,
+    zIndex,
+    locked: element.locked ?? false,
+  };
+  if (element.rotation !== undefined) {
+    record.rotation = element.rotation;
+  }
+  if (element.kind === 'text') {
+    record.text = element.text;
+  } else {
+    record.fill = element.fill;
+    if (element.radius !== undefined) {
+      record.radius = element.radius;
+    }
+  }
+  return record;
+}
+
+/**
+ * The focus target on the active slide: stable identity, canonical frame,
+ * z order, and the full canonical element value (text/style or fill/radius).
+ */
+function describeSelection(slide: Slide, selectedElementId: string | undefined): unknown {
+  if (selectedElementId === undefined) {
+    return null;
+  }
+  const element = slide.elements[selectedElementId];
+  const selection: ToolResult = {
+    id: element.id,
+    kind: element.kind,
+    name: element.name,
+    frame: element.frame,
+    locked: element.locked ?? false,
+    zIndex: slide.elementOrder.indexOf(element.id),
+    value: element,
+  };
+  if (element.rotation !== undefined) {
+    selection.rotation = element.rotation;
+  }
+  return selection;
+}
+
 export function useWebMcp(store: PresentationStore): boolean {
   const [isAvailable, setIsAvailable] = useState(false);
 
@@ -121,10 +197,85 @@ export function useWebMcp(store: PresentationStore): boolean {
     const controller = new AbortController();
     const tools: RegisteredTool[] = [
       {
+        name: 'get_presentation_context',
+        description:
+          'Start here. Read the current human focus and the canonical canvas: document revision, focus revision, presentation id and title, the canonical coordinateSpace, the active slide (stable id, one-based index, name, title), and the selected element (stable id, kind, name, full canonical frame, optional rotation, locked flag, zIndex, and its full canonical value: text and style, or fill and radius) when the human has one selected. Call get_presentation_spatial_map or read_presentation_slide from here only when you need a specific slide in more detail.',
+        inputSchema: noInputSchema(),
+        annotations: { readOnlyHint: true },
+        execute: (input) => {
+          const parsed = parseToolInput(input, []);
+          if (!parsed.ok) {
+            return invalidInput(parsed.detail);
+          }
+          const { presentation, session } = store.getSnapshot();
+          const activeSlide = presentation.slides[session.activeSlideId];
+          return {
+            ok: true,
+            revision: presentation.revision,
+            focusRevision: session.focusRevision,
+            presentation: {
+              id: presentation.id,
+              title: presentation.title,
+            },
+            coordinateSpace: describeCoordinateSpace(presentation.size),
+            activeSlide: {
+              ...describeSlide(activeSlide.id, presentation.slideOrder.indexOf(activeSlide.id) + 1, activeSlide),
+              title: slideTitleText(activeSlide),
+            },
+            selection: describeSelection(activeSlide, session.selectedElementId),
+          };
+        },
+      },
+      {
+        name: 'get_presentation_spatial_map',
+        description:
+          'Read the compact structured canvas of one slide by its stable slide id: the canonical coordinateSpace, slide id/one-based index/name/background, and every element in canonical z order with its id, kind, name, frame, zIndex, locked flag, and content (text, or fill/radius) — text styling is intentionally omitted. Prefer this for geometry; use read_presentation_slide only when you need exact styles or comments.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            slideId: {
+              type: 'string',
+              description: 'Stable Comake slide id from get_presentation_context or get_presentation_outline.',
+            },
+          },
+          required: ['slideId'],
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: true },
+        execute: (input) => {
+          const parsed = parseToolInput(input, ['slideId']);
+          if (!parsed.ok) {
+            return invalidInput(parsed.detail);
+          }
+          const slideId = parseToolString(parsed.value, 'slideId');
+          if (!slideId.ok) {
+            return invalidInput(slideId.detail);
+          }
+          const snapshot = store.getSnapshot();
+          const slide = snapshot.presentation.slides[slideId.value];
+          if (!slide) {
+            return toolFailure('NOT_FOUND', `No slide "${slideId.value}" in this presentation.`);
+          }
+          return {
+            ok: true,
+            revision: snapshot.presentation.revision,
+            coordinateSpace: describeCoordinateSpace(snapshot.presentation.size),
+            slide: {
+              ...describeSlide(slide.id, snapshot.presentation.slideOrder.indexOf(slide.id) + 1, slide),
+              background: slide.background,
+            },
+            elements: slide.elementOrder.map((elementId, zIndex) =>
+              spatialElementRecord(slide, elementId, zIndex),
+            ),
+          };
+        },
+      },
+      {
         name: 'get_presentation_outline',
         description:
-          'Read the presentation outline: title, current revision, the slide the human is viewing, and every slide with its stable id, name, title text, and element count. Start here to discover stable slide ids and the current revision.',
+          'Read the presentation outline: title, current revision, the slide the human is viewing, and every slide with its stable id, name, title text, and element count. After get_presentation_context, use this to enumerate slides beyond the active one and to discover stable slide ids.',
         inputSchema: noInputSchema(),
+        annotations: { readOnlyHint: true },
         execute: (input) => {
           const parsed = parseToolInput(input, []);
           if (!parsed.ok) {
@@ -155,7 +306,7 @@ export function useWebMcp(store: PresentationStore): boolean {
       {
         name: 'read_presentation_slide',
         description:
-          'Read one slide by its stable slide id: background, every element with its full shape (id, kind, name, frame, text and style, or fill), and all comments on the slide. Read a slide before editing it, and re-read it after any rejection.',
+          'Read one slide by its stable slide id in full detail: background, every element with its complete canonical shape (id, kind, name, frame, text and style, or fill), and all comments on the slide. Use this when you need exact text styling or comments; for geometry-only reads prefer the lighter get_presentation_spatial_map. Read a slide before editing it, and re-read it after any rejection.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -167,6 +318,7 @@ export function useWebMcp(store: PresentationStore): boolean {
           required: ['slideId'],
           additionalProperties: false,
         },
+        annotations: { readOnlyHint: true },
         execute: (input) => {
           const parsed = parseToolInput(input, ['slideId']);
           if (!parsed.ok) {
@@ -320,6 +472,7 @@ export function useWebMcp(store: PresentationStore): boolean {
         description:
           'List the most recent attributed changesets: actor kind and name, label, revision, timestamp, reverted status, and per-operation-type counts. Bounded to the latest 12; older history is not exposed.',
         inputSchema: noInputSchema(),
+        annotations: { readOnlyHint: true },
         execute: (input) => {
           const parsed = parseToolInput(input, []);
           if (!parsed.ok) {

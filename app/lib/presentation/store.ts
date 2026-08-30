@@ -9,8 +9,10 @@ import {
 } from './document';
 
 /** Client-local view state. Never enters ChangeSets or the canonical model. */
-interface DocumentSession {
+export interface DocumentSession {
   activeSlideId: string;
+  /** Monotonic version of the human focus: increments only when the active slide or the selected element changes. */
+  focusRevision: number;
   selectedElementId?: string;
 }
 
@@ -40,25 +42,32 @@ export class PresentationStore {
     if (!this.snapshot.presentation.slides[slideId]) {
       return;
     }
-    this.snapshot = {
-      ...this.snapshot,
-      session: {
-        activeSlideId: slideId,
-        selectedElementId: undefined,
-      },
-    };
-    this.emit();
+    const session = this.snapshot.session;
+    if (slideId === session.activeSlideId && session.selectedElementId === undefined) {
+      return;
+    }
+    // A slide change always clears the selection and advances the focus revision.
+    this.applySession({
+      activeSlideId: slideId,
+      focusRevision: session.focusRevision + 1,
+    });
   }
 
   public selectElement(elementId?: string): void {
-    this.snapshot = {
-      ...this.snapshot,
-      session: {
-        ...this.snapshot.session,
-        selectedElementId: elementId,
-      },
-    };
-    this.emit();
+    const session = this.snapshot.session;
+    if (session.selectedElementId === elementId) {
+      return;
+    }
+    // The selection must name an element that exists on the active slide; a
+    // stale or foreign id is a no-op that keeps the current selection intact.
+    if (elementId !== undefined && !this.snapshot.presentation.slides[session.activeSlideId].elements[elementId]) {
+      return;
+    }
+    this.applySession({
+      ...session,
+      selectedElementId: elementId,
+      focusRevision: session.focusRevision + 1,
+    });
   }
 
   public dispatch(request: DispatchRequest, recordInUserUndo = request.actor.kind === 'human'): DispatchResult {
@@ -72,7 +81,8 @@ export class PresentationStore {
       : this.snapshot.userUndoStack;
     this.snapshot = {
       ...result.document,
-      session: this.snapshot.session,
+      // Re-derive the focus against the new canonical document so the session never keeps a dangling selection.
+      session: sessionAfterDispatch(result.document, this.snapshot.session),
       // Keep the undo stack consistent with the kernel's bounded changeset window.
       userUndoStack: userUndoStack.filter((changeSetId) => changeSetId in result.document.changeSets),
     };
@@ -150,11 +160,34 @@ export class PresentationStore {
     return true;
   }
 
+  private applySession(session: DocumentSession): void {
+    this.snapshot = { ...this.snapshot, session };
+    this.emit();
+  }
+
   private emit(): void {
     for (const listener of this.listeners) {
       listener();
     }
   }
+}
+
+/**
+ * Re-derive the session against the post-dispatch canonical document: when the
+ * selected element no longer exists on the active slide, drop the selection
+ * and advance the focus revision so the session can never expose a dangling
+ * selection.
+ */
+function sessionAfterDispatch(document: PresentationDocument, session: DocumentSession): DocumentSession {
+  const { activeSlideId, selectedElementId } = session;
+  if (selectedElementId === undefined) {
+    return session;
+  }
+  const activeSlide = document.presentation.slides[activeSlideId];
+  if (activeSlide.elements[selectedElementId]) {
+    return session;
+  }
+  return { activeSlideId, focusRevision: session.focusRevision + 1 };
 }
 
 function createInitialSnapshot(): PresentationSnapshot {
@@ -163,6 +196,7 @@ function createInitialSnapshot(): PresentationSnapshot {
     ...document,
     session: {
       activeSlideId: LAUNCH_DECK_INITIAL_SLIDE_ID,
+      focusRevision: 0,
     },
     userUndoStack: [],
   };
