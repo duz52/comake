@@ -9,6 +9,7 @@ Claude.md
 CLAUDE.md
 .agents/
 .claude/
+/internal/
 
 # React Router
 /.react-router/
