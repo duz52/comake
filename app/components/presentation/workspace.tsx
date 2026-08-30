@@ -17,6 +17,7 @@ import {
 } from '../../lib/presentation/store';
 import { useWebMcp } from '../../lib/presentation/webmcp';
 import type { ChangeSet, Frame, PresentationElement } from '../../types/presentation';
+import { ThemeToggle } from '../theme-toggle';
 import { Button } from '../ui/button';
 import { Tooltip } from '../ui/tooltip';
 import { SlideArtwork, type DragState } from './slide-artwork';
@@ -308,6 +309,7 @@ function Workspace({ store }: { store: PresentationStore }) {
             <span className="status-dot" />
             {webMcpAvailable ? 'WEBMCP LIVE' : 'DEMO MODE'}
           </div>
+          <ThemeToggle />
           <Button className="quiet-button" onClick={undoHumanChange} type="button" variant="ghost">
             Undo my move
           </Button>
