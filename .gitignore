@@ -1,0 +1,22 @@
+.DS_Store
+.env
+/node_modules/
+*.tsbuildinfo
+
+# Local agent instructions
+AGENTS.md
+Claude.md
+CLAUDE.md
+.agents/
+.claude/
+
+# React Router
+/.react-router/
+/build/
+/dist/
+
+# Cloudflare
+.mf
+.wrangler
+.dev.vars*
+worker-configuration.d.ts
