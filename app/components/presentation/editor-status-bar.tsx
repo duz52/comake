@@ -37,7 +37,7 @@ export function EditorStatusBar({
       <div className="status-group">
         <span className="status-hint">⌘K commands · V/T/S tools · ⌘D duplicate · Del delete</span>
         <span className="status-sep" aria-hidden="true">·</span>
-        <span aria-hidden="true">960 × 540 · 16:9</span>
+        <span aria-hidden="true" className="status-dims">960 × 540 · 16:9</span>
         <span className="status-sep" aria-hidden="true">·</span>
         <span>Rev {revision}</span>
       </div>

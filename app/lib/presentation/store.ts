@@ -1,13 +1,7 @@
-import type { Presentation } from '../../types/presentation';
-import { humanActor, systemActor } from './actors';
-import { LAUNCH_DECK_INITIAL_SLIDE_ID } from './deck';
-import {
-  createInitialPresentationDocument,
-  dispatchPresentationDocument,
-  type DispatchRequest,
-  type DispatchResult,
-  type PresentationDocument,
-} from './document';
+import type { ChangeSet, Presentation } from '../../types/presentation';
+import type { ClientDispatchRequest } from './attribution';
+import type { DispatchFailure, DispatchResult, PresentationDocument } from './document';
+import type { ProjectTransport } from './transport';
 
 /** Session zoom bounds in scale factor (1 = 100%); view state, never canonical. */
 export const MIN_SESSION_ZOOM = 0.1;
@@ -31,6 +25,17 @@ export interface PresentationSnapshot extends PresentationDocument {
   userRedoStack: string[];
 }
 
+export type TransportFailure = { code: 'TRANSPORT_ERROR'; detail: string };
+
+/**
+ * The store dispatch result: the kernel result plus one honest transport
+ * failure (the server was not reached or answered abnormally). A result is
+ * `ok` only after the canonical server accepted it.
+ */
+export type StoreDispatchResult =
+  | { changeSet: ChangeSet; document: PresentationDocument; ok: true }
+  | { failure: DispatchFailure | TransportFailure; ok: false };
+
 /** Same membership, order-insensitive: the selection compares as a set. */
 function sameIdSet(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) {
@@ -43,19 +48,53 @@ function sameIdSet(left: readonly string[], right: readonly string[]): boolean {
 /**
  * Outcome of a revert attempt. `permanent` distinguishes a semantically
  * permanent inverse rejection — the candidate can never succeed — from a
- * transient one (a stale revision), where a later retry may succeed.
+ * transient one (a stale revision or a transport failure), where a later
+ * retry may succeed.
  */
 type RevertOutcome = { ok: true } | { ok: false; permanent: boolean };
 
 /**
- * Browser store: a session/view controller around the pure command kernel in
- * `./document`. It owns UI-only state (session, human undo stack, listeners)
- * and projects snapshots; every canonical mutation is delegated to the kernel,
- * which is the single owner of the document algorithm.
+ * Browser store: an ephemeral mirror + session owner around the canonical
+ * project server. It owns UI-only state (session, human undo stack,
+ * listeners) and projects snapshots; the canonical document is the project's
+ * ProjectRoom, reached exclusively through the injected {@link ProjectTransport}.
+ *
+ * Every canonical mutation is serialized at this boundary: concurrent
+ * `dispatch`/undo/redo/revert calls run strictly in call order, each reading
+ * the mirror that reflects every previously accepted mutation, so no call can
+ * silently reorder against a stale snapshot. An accepted response replaces
+ * the mirror with the authoritative document and re-derives the session
+ * exactly once; a stale failure triggers exactly one canonical read to
+ * refresh the mirror and never retries the intent.
  */
 export class PresentationStore {
   private listeners = new Set<() => void>();
-  private snapshot = createInitialSnapshot();
+  private snapshot: PresentationSnapshot;
+  private readonly projectId: string;
+  private readonly transport: ProjectTransport;
+  /** Serialization tail: every canonical mutation runs after the previous one settled. */
+  private tail: Promise<void> = Promise.resolve();
+
+  constructor(
+    document: PresentationDocument,
+    initialSlideId: string,
+    transport: ProjectTransport,
+    projectId: string,
+  ) {
+    this.transport = transport;
+    this.projectId = projectId;
+    this.snapshot = {
+      ...document,
+      session: {
+        activeSlideId: initialSlideId,
+        focusRevision: 0,
+        selectedElementIds: [],
+        zoom: 1,
+      },
+      userUndoStack: [],
+      userRedoStack: [],
+    };
+  }
 
   public getSnapshot = (): PresentationSnapshot => this.snapshot;
 
@@ -63,6 +102,8 @@ export class PresentationStore {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
+
+  // --- Session-only operations (synchronous browser state, never canonical) ---
 
   public selectSlide(slideId: string): void {
     const session = this.snapshot.session;
@@ -128,12 +169,196 @@ export class PresentationStore {
     this.applySession({ ...this.snapshot.session, zoom: bounded });
   }
 
-  public dispatch(request: DispatchRequest, recordInUserUndo = request.actor.kind === 'human'): DispatchResult {
-    const result = dispatchPresentationDocument(this.snapshot, request);
+  /** Select every unlocked element of the active slide. */
+  public selectAll(): void {
+    const elements = this.activeSlideElements();
+    this.replaceSelection(
+      Object.keys(elements).filter((elementId) => elements[elementId].locked !== true),
+    );
+  }
+
+  // --- Canonical mutations (async, serialized, server-accepted only) ----------
+
+  /**
+   * One attributed canonical mutation. `baseRevision` is taken from the
+   * request when the contract supplies one (agent writes); human writes
+   * always carry the store's current authoritative revision. Returns only
+   * after the server accepted or rejected; a rejected intent is never
+   * retried here.
+   */
+  public dispatch(request: ClientDispatchRequest, recordInUserUndo = request.actorKind === 'human'): Promise<StoreDispatchResult> {
+    return this.enqueue(() => this.performDispatch(request, recordInUserUndo));
+  }
+
+  /**
+   * Undo the latest human change by reverting its inverse operations through
+   * the server. The undo and redo stacks change only after acceptance.
+   */
+  public undoLatestHumanChange(): Promise<boolean> {
+    return this.enqueue(async () => {
+      const changeSetId = this.snapshot.userUndoStack.at(-1);
+      if (!changeSetId) {
+        return false;
+      }
+
+      const changeSet = this.snapshot.changeSets[changeSetId];
+      if (!changeSet || changeSet.revertedAt) {
+        // A stale or already-reverted top entry can never be undone; drop
+        // exactly this entry so the next invocation reaches the next candidate.
+        this.popUserUndoEntry();
+        return false;
+      }
+
+      const revert = await this.revertChangeSet(changeSetId, `Undid ${changeSet.label}`);
+      if (!revert.ok) {
+        if (revert.permanent) {
+          // The inverse is permanently rejected, so the candidate is dead: drop
+          // it (without marking it reverted) instead of blocking the safe
+          // entries below. A transient failure keeps the candidate for a retry.
+          this.popUserUndoEntry();
+        }
+        return false;
+      }
+
+      // The revert dispatch prunes trimmed changesets from the stack, so the
+      // target is still the top entry only when it survived the trim.
+      if (this.snapshot.userUndoStack.at(-1) === changeSetId) {
+        this.popUserUndoEntry();
+      }
+      // Mirror the undo into the redo stack: the reverted change set now holds
+      // the safely replayable forward intent. Trimming may have removed it,
+      // which the membership filter below makes a no-op.
+      this.snapshot = {
+        ...this.snapshot,
+        userRedoStack: [...this.snapshot.userRedoStack, changeSetId].filter(
+          (id) => id in this.snapshot.changeSets,
+        ),
+      };
+      this.emit();
+      return true;
+    });
+  }
+
+  /**
+   * Redo the latest undone human change by replaying its original forward
+   * operations. The operations carry the optimistic guards they were read
+   * with; after the paired undo the state matches those guards exactly, so
+   * the replay applies cleanly — and any interleaved mutation makes the
+   * guards fail, so a stale intent is rejected, never silently replayed.
+   */
+  public redoLatestHumanChange(): Promise<boolean> {
+    return this.enqueue(async () => {
+      const changeSetId = this.snapshot.userRedoStack.at(-1);
+      if (!changeSetId) {
+        return false;
+      }
+      const changeSet = this.snapshot.changeSets[changeSetId];
+      if (!changeSet) {
+        // A trimmed candidate can never be replayed; drop it so the next
+        // invocation reaches the next candidate.
+        this.popUserRedoEntry();
+        return false;
+      }
+
+      // The dispatch below clears the redo stack (any human mutation does);
+      // capture the deeper candidates first so they survive this replay.
+      const remaining = this.snapshot.userRedoStack.slice(0, -1);
+      const result = await this.performDispatch(
+        {
+          actorKind: 'human',
+          label: `Redid ${changeSet.label}`,
+          operations: changeSet.operations,
+        },
+        true,
+      );
+      if (!result.ok) {
+        // The current state does not hold the guards of the recorded forward
+        // intent; the candidate is dead against it and must not block the
+        // candidates below.
+        this.popUserRedoEntry();
+        return false;
+      }
+      this.snapshot = {
+        ...this.snapshot,
+        userRedoStack: remaining.filter((id) => id in this.snapshot.changeSets),
+      };
+      this.emit();
+      return true;
+    });
+  }
+
+  /** Revert one agent change set through the server; stacks change only after acceptance. */
+  public revertAgentChange(changeSetId: string): Promise<boolean> {
+    return this.enqueue(async () => {
+      const changeSet = this.snapshot.changeSets[changeSetId];
+      if (!changeSet || changeSet.actor.kind !== 'agent' || changeSet.revertedAt) {
+        return false;
+      }
+
+      return (await this.revertChangeSet(changeSetId, `Reverted ${changeSet.label}`)).ok;
+    });
+  }
+
+  private activeSlideElements(): Presentation['slides'][string]['elements'] {
+    return this.snapshot.presentation.slides[this.snapshot.session.activeSlideId].elements;
+  }
+
+  /** Run one canonical mutation strictly after every previously enqueued one. */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(operation, operation);
+    // A mutation's own promise rejection must never poison the chain; every
+    // public mutation already resolves with a typed result, and this keeps the
+    // invariant even if a future operation misbehaves.
+    this.tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async performDispatch(
+    request: ClientDispatchRequest,
+    recordInUserUndo: boolean,
+  ): Promise<StoreDispatchResult> {
+    const envelope: ClientDispatchRequest =
+      request.baseRevision === undefined
+        ? { ...request, baseRevision: this.snapshot.presentation.revision }
+        : request;
+
+    let result: DispatchResult;
+    try {
+      result = await this.transport.dispatch(this.projectId, envelope);
+    } catch (error) {
+      return {
+        ok: false,
+        failure: { code: 'TRANSPORT_ERROR', detail: transportFailureDetail(error) },
+      };
+    }
+
     if (!result.ok) {
+      if (result.failure.code === 'STALE_REVISION') {
+        // Exactly one canonical read refreshes the mirror; the intent is never
+        // retried and the original structured stale failure is returned as-is.
+        try {
+          const document = await this.transport.readDocument(this.projectId);
+          if (document) {
+            this.replaceDocument(document);
+          }
+        } catch (error) {
+          // The refresh itself failed; the mirror stays authoritative-read and
+          // the next mutation retries against it. Logged, never surfaced raw.
+          console.error('[presentation-store] stale-dispatch refresh failed:', error);
+        }
+      }
       return result;
     }
 
+    this.applyAccepted(result, recordInUserUndo);
+    return result;
+  }
+
+  /** An accepted server result replaces the mirror and re-derives the session exactly once. */
+  private applyAccepted(result: Extract<DispatchResult, { ok: true }>, recordInUserUndo: boolean): void {
     const userUndoStack = recordInUserUndo
       ? [...this.snapshot.userUndoStack, result.changeSet.id]
       : this.snapshot.userUndoStack;
@@ -150,117 +375,45 @@ export class PresentationStore {
       userUndoStack: userUndoStack.filter((changeSetId) => changeSetId in result.document.changeSets),
     };
     this.emit();
-    return result;
   }
 
-  public undoLatestHumanChange(): boolean {
-    const changeSetId = this.snapshot.userUndoStack.at(-1);
-    if (!changeSetId) {
-      return false;
-    }
-
-    const changeSet = this.snapshot.changeSets[changeSetId];
-    if (!changeSet || changeSet.revertedAt) {
-      // A stale or already-reverted top entry can never be undone; drop
-      // exactly this entry so the next invocation reaches the next candidate.
-      this.popUserUndoEntry();
-      return false;
-    }
-
-    const revert = this.revertChangeSet(changeSetId, `Undid ${changeSet.label}`);
-    if (!revert.ok) {
-      if (revert.permanent) {
-        // The inverse is permanently rejected, so the candidate is dead: drop
-        // it (without marking it reverted) instead of blocking the safe
-        // entries below. A transient failure keeps the candidate for a retry.
-        this.popUserUndoEntry();
-      }
-      return false;
-    }
-
-    // The revert dispatch prunes trimmed changesets from the stack, so the
-    // target is still the top entry only when it survived the trim.
-    if (this.snapshot.userUndoStack.at(-1) === changeSetId) {
-      this.popUserUndoEntry();
-    }
-    // Mirror the undo into the redo stack: the reverted change set now holds
-    // the safely replayable forward intent. Trimming may have removed it,
-    // which the membership filter below makes a no-op.
+  /** A canonical read replaces the mirror; session and stacks stay valid against it. */
+  private replaceDocument(document: PresentationDocument): void {
     this.snapshot = {
-      ...this.snapshot,
-      userRedoStack: [...this.snapshot.userRedoStack, changeSetId].filter(
-        (id) => id in this.snapshot.changeSets,
-      ),
+      ...document,
+      session: sessionAfterDispatch(document, this.snapshot.presentation, this.snapshot.session),
+      userUndoStack: this.snapshot.userUndoStack.filter((changeSetId) => changeSetId in document.changeSets),
+      userRedoStack: this.snapshot.userRedoStack.filter((changeSetId) => changeSetId in document.changeSets),
     };
     this.emit();
-    return true;
   }
 
-  /**
-   * Redo the latest undone human change by replaying its original forward
-   * operations. The operations carry the optimistic guards they were read
-   * with; after the paired undo the state matches those guards exactly, so
-   * the replay applies cleanly — and any interleaved mutation makes the
-   * guards fail, so a stale intent is rejected, never silently replayed.
-   */
-  public redoLatestHumanChange(): boolean {
-    const changeSetId = this.snapshot.userRedoStack.at(-1);
-    if (!changeSetId) {
-      return false;
-    }
-    const changeSet = this.snapshot.changeSets[changeSetId];
-    if (!changeSet) {
-      // A trimmed candidate can never be replayed; drop it so the next
-      // invocation reaches the next candidate.
-      this.popUserRedoEntry();
-      return false;
+  /** Apply the inverse operations of one change set as a canonical revert. */
+  private async revertChangeSet(changeSetId: string, label: string): Promise<RevertOutcome> {
+    const target = this.snapshot.changeSets[changeSetId];
+    if (!target) {
+      return { ok: false, permanent: true };
     }
 
-    // The dispatch below clears the redo stack (any human mutation does);
-    // capture the deeper candidates first so they survive this replay.
-    const remaining = this.snapshot.userRedoStack.slice(0, -1);
-    const result = this.dispatch(
+    const result = await this.performDispatch(
       {
-        actor: humanActor,
-        label: `Redid ${changeSet.label}`,
-        operations: changeSet.operations,
+        actorKind: 'human',
+        label,
+        operations: target.inverseOperations,
+        revertsChangeSetId: changeSetId,
       },
-      true,
+      false,
     );
     if (!result.ok) {
-      // The current state does not hold the guards of the recorded forward
-      // intent; the candidate is dead against it and must not block the
-      // candidates below.
-      this.popUserRedoEntry();
-      return false;
+      // A stale revision or a transport failure is transient — a retry may
+      // succeed. Every other rejection is semantically permanent for this
+      // candidate.
+      return {
+        ok: false,
+        permanent: result.failure.code !== 'STALE_REVISION' && result.failure.code !== 'TRANSPORT_ERROR',
+      };
     }
-    this.snapshot = {
-      ...this.snapshot,
-      userRedoStack: remaining.filter((id) => id in this.snapshot.changeSets),
-    };
-    this.emit();
-    return true;
-  }
-
-  /** Select every unlocked element of the active slide. */
-  public selectAll(): void {
-    const elements = this.activeSlideElements();
-    this.replaceSelection(
-      Object.keys(elements).filter((elementId) => elements[elementId].locked !== true),
-    );
-  }
-
-  public revertAgentChange(changeSetId: string): boolean {
-    const changeSet = this.snapshot.changeSets[changeSetId];
-    if (!changeSet || changeSet.actor.kind !== 'agent' || changeSet.revertedAt) {
-      return false;
-    }
-
-    return this.revertChangeSet(changeSetId, `Reverted ${changeSet.label}`).ok;
-  }
-
-  private activeSlideElements(): Presentation['slides'][string]['elements'] {
-    return this.snapshot.presentation.slides[this.snapshot.session.activeSlideId].elements;
+    return { ok: true };
   }
 
   /**
@@ -297,46 +450,6 @@ export class PresentationStore {
     this.emit();
   }
 
-  private revertChangeSet(changeSetId: string, label: string): RevertOutcome {
-    const target = this.snapshot.changeSets[changeSetId];
-    if (!target) {
-      return { ok: false, permanent: true };
-    }
-
-    const result = this.dispatch(
-      {
-        actor: systemActor,
-        label,
-        operations: target.inverseOperations,
-      },
-      false,
-    );
-    if (!result.ok) {
-      // A stale revision is transient — a retry may succeed. Every other
-      // rejection is semantically permanent for this candidate.
-      return { ok: false, permanent: result.failure.code !== 'STALE_REVISION' };
-    }
-
-    // The revert dispatch may have trimmed the target (reverting the oldest
-    // entry of a full window): the revert succeeded and the target is no
-    // longer visible, so there is nothing left to mark.
-    const currentTarget = this.snapshot.changeSets[changeSetId];
-    if (currentTarget) {
-      this.snapshot = {
-        ...this.snapshot,
-        changeSets: {
-          ...this.snapshot.changeSets,
-          [changeSetId]: {
-            ...currentTarget,
-            revertedAt: new Date().toISOString(),
-          },
-        },
-      };
-    }
-    this.emit();
-    return { ok: true };
-  }
-
   private applySession(session: DocumentSession): void {
     this.snapshot = { ...this.snapshot, session };
     this.emit();
@@ -349,19 +462,26 @@ export class PresentationStore {
   }
 }
 
+function transportFailureDetail(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return 'The presentation server could not be reached. Please try again.';
+}
+
 /**
- * Re-derive the session against the post-dispatch canonical document. The
- * pre-dispatch presentation is used only for deriving UI focus (the former
- * neighbors of a deleted active slide); it never enters the canonical model.
+ * Re-derive the session against a new canonical document. The pre-replacement
+ * presentation is used only for deriving UI focus (the former neighbors of a
+ * deleted active slide); it never enters the canonical model.
  *
  * When the active slide remains, the selection is pruned to the elements that
  * still exist on it. When the active slide was deleted, focus moves to the
- * first slide after it in the former order that survived the dispatch, to the
- * nearest surviving predecessor if none did, or — when a batch replaced every
- * formerly existing slide — to the first canonical post-dispatch slide; the
- * selection is cleared either way. A dropped selection or moved focus advances
- * the focus revision exactly once so the session can never expose a dangling
- * slide or selection.
+ * first slide after it in the former order that survived, to the nearest
+ * surviving predecessor if none did, or — when a batch replaced every
+ * formerly existing slide — to the first canonical post-replacement slide;
+ * the selection is cleared either way. A dropped selection or moved focus
+ * advances the focus revision exactly once so the session can never expose a
+ * dangling slide or selection.
  */
 function sessionAfterDispatch(
   document: PresentationDocument,
@@ -387,10 +507,9 @@ function sessionAfterDispatch(
   const formerSlideOrder = previousPresentation.slideOrder;
   const survivingSlides = document.presentation.slides;
   // Identity-based successor: the nearest slide after the former active slide
-  // that survived the dispatch, else the nearest surviving predecessor, else
-  // the first canonical slide when the dispatch replaced the whole former
-  // deck. The kernel guarantees a non-empty slide order, so `successorId` is
-  // always defined here.
+  // that survived, else the nearest surviving predecessor, else the first
+  // canonical slide when the whole former deck was replaced. The kernel
+  // guarantees a non-empty slide order, so `successorId` is always defined.
   const successorId =
     formerSlideOrder.slice(formerIndex + 1).find((slideId) => slideId in survivingSlides) ??
     formerSlideOrder.slice(0, formerIndex).reverse().find((slideId) => slideId in survivingSlides) ??
@@ -400,20 +519,5 @@ function sessionAfterDispatch(
     selectedElementIds: [],
     focusRevision: session.focusRevision + 1,
     zoom: session.zoom,
-  };
-}
-
-function createInitialSnapshot(): PresentationSnapshot {
-  const document = createInitialPresentationDocument();
-  return {
-    ...document,
-    session: {
-      activeSlideId: LAUNCH_DECK_INITIAL_SLIDE_ID,
-      focusRevision: 0,
-      selectedElementIds: [],
-      zoom: 1,
-    },
-    userUndoStack: [],
-    userRedoStack: [],
   };
 }

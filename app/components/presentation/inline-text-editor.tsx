@@ -18,11 +18,11 @@ interface InlineTextEditorProps {
   caretPoint: { clientX: number; clientY: number } | null;
   element: TextElement;
   /**
-   * Commit the current draft. Returns true when the session may end (nothing
-   * changed, or the guarded command applied); false keeps the session for a
-   * stale/conflict review.
+   * Commit the current draft. Resolves true when the session may end (nothing
+   * changed, or the guarded command was accepted by the server); false keeps
+   * the session for a stale/conflict review.
    */
-  onCommit: (text: string) => boolean;
+  onCommit: (text: string) => boolean | Promise<boolean>;
   onDraftChange: (text: string) => void;
 }
 
@@ -44,7 +44,12 @@ export function InlineTextEditor({ caretPoint, element, onCommit, onDraftChange 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function commit(): void {
+  /**
+   * Commit the current draft once, when the session may end. The commit is
+   * asynchronous: the session ends only after the guarded command was
+   * accepted, so a rejected write never silently closes the editor.
+   */
+  async function commit(): Promise<void> {
     if (committedRef.current) {
       return;
     }
@@ -52,7 +57,7 @@ export function InlineTextEditor({ caretPoint, element, onCommit, onDraftChange 
     if (!editor) {
       return;
     }
-    if (onCommit(editor.textContent ?? '')) {
+    if (await onCommit(editor.textContent ?? '')) {
       committedRef.current = true;
     }
   }
@@ -64,7 +69,7 @@ export function InlineTextEditor({ caretPoint, element, onCommit, onDraftChange 
     if (event.ctrlKey || event.metaKey) {
       if (event.key === 'Enter') {
         event.preventDefault();
-        commit();
+        void commit();
       }
       return;
     }
@@ -75,7 +80,7 @@ export function InlineTextEditor({ caretPoint, element, onCommit, onDraftChange 
           // Escape commits the draft (Excalidraw/PowerPoint semantics): the
           // text the user shaped is kept. A stale draft keeps the session
           // open for the conflict review instead of resolving it silently.
-          commit();
+          void commit();
         }
         return;
       case 'Enter':
@@ -103,7 +108,7 @@ export function InlineTextEditor({ caretPoint, element, onCommit, onDraftChange 
       className="inline-editor"
       onBlur={() => {
         if (!committedRef.current) {
-          commit();
+          void commit();
         }
       }}
       onCompositionEnd={() => {

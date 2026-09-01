@@ -7,8 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
 } from 'react';
-import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
-import { humanActor } from '../../lib/presentation/actors';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import type { PresentationStore, PresentationSnapshot } from '../../lib/presentation/store';
 import type { Frame, PresentationElement, TextElement } from '../../types/presentation';
 import {
@@ -243,14 +242,15 @@ export function CanvasStage({
   }
 
   /**
-   * Commit a draft through the guarded canonical command; returns true when
+   * Commit a draft through the guarded canonical command; resolves true when
    * the session may end. A session that changed nothing ends without any
    * write; an empty draft deletes the element (the tldraw/Excalidraw rule —
    * an empty text box is meaningless, so committing one removes it); a stale
    * draft (canonical changed while dirty) is blocked and the review UI asks
-   * the user to cancel or retry instead of overwriting.
+   * the user to cancel or retry instead of overwriting. The commit resolves
+   * only after the server accepted or rejected the write.
    */
-  function commitEditing(text: string): boolean {
+  async function commitEditing(text: string): Promise<boolean> {
     const session = editingRef.current;
     if (!session) {
       return true;
@@ -266,8 +266,8 @@ export function CanvasStage({
         // conflict review decides, never a silent delete.
         return false;
       }
-      const deletion = store.dispatch({
-        actor: humanActor,
+      const deletion = await store.dispatch({
+        actorKind: 'human',
         label: `Deleted ${element.name}`,
         operations: [
           { type: 'delete_element', slideId, elementId: session.elementId, expectedElement: element },
@@ -288,7 +288,7 @@ export function CanvasStage({
     if (element.text !== session.baseline) {
       return false;
     }
-    const result = updateText(env(), element, text);
+    const result = await updateText(env(), element, text);
     if (!result.ok) {
       notify(result.notice);
       return false;
@@ -298,7 +298,7 @@ export function CanvasStage({
   }
 
   /** Retry a stale draft against the current canonical text with a fresh guard. */
-  function retryEditing(): void {
+  async function retryEditing(): Promise<void> {
     const session = editingRef.current;
     if (!session) {
       return;
@@ -309,8 +309,8 @@ export function CanvasStage({
       return;
     }
     if (editingDraftRef.current === '') {
-      const deletion = store.dispatch({
-        actor: humanActor,
+      const deletion = await store.dispatch({
+        actorKind: 'human',
         label: `Deleted ${element.name}`,
         operations: [
           { type: 'delete_element', slideId, elementId: session.elementId, expectedElement: element },
@@ -323,7 +323,7 @@ export function CanvasStage({
       endEditing(session);
       return;
     }
-    const result = updateText(env(), element, editingDraftRef.current);
+    const result = await updateText(env(), element, editingDraftRef.current);
     if (!result.ok) {
       notify(result.notice);
       return;
@@ -384,22 +384,25 @@ export function CanvasStage({
     }
     const point = slidePointFromClient(slideRef.current!.getBoundingClientRect(), event.clientX, event.clientY);
     const element = toolMode === 'text' ? newTextElement(point) : newShapeElement(point);
-    const result = store.dispatch({
-      actor: humanActor,
-      label: `Added ${element.name}`,
-      operations: [{ type: 'create_element', slideId, element }],
-    });
-    if (!result.ok) {
-      notify('That element could not be added. Please try again.');
-      return;
-    }
-    store.selectElement(element.id);
-    onToolModeChange('select');
-    if (element.kind === 'text') {
-      // The Text tool never lands a placeholder: the fresh element opens in
-      // the inline editor, and an untouched commit removes it again.
-      beginEditingCreatedElement(element);
-    }
+    void store
+      .dispatch({
+        actorKind: 'human',
+        label: `Added ${element.name}`,
+        operations: [{ type: 'create_element', slideId, element }],
+      })
+      .then((result) => {
+        if (!result.ok) {
+          notify('That element could not be added. Please try again.');
+          return;
+        }
+        store.selectElement(element.id);
+        onToolModeChange('select');
+        if (element.kind === 'text') {
+          // The Text tool never lands a placeholder: the fresh element opens in
+          // the inline editor, and an untouched commit removes it again.
+          beginEditingCreatedElement(element);
+        }
+      });
   }
 
   // --- Pointer gestures --------------------------------------------------------
@@ -529,26 +532,30 @@ export function CanvasStage({
         expected: target.origin,
         next: gesturePreviewFrame('move', target.origin, current.originPointer, current.pointer),
       }));
-      const result = updateFrameElements(
+      // Exactly one committed canonical operation per gesture: the preview
+      // frames never reach the server, only this atomic batch on pointer-up.
+      void updateFrameElements(
         env(),
         targets.length === 1
           ? `Moved ${targets[0].elementId === current.elementId ? current.elementName : 'an element'}`
           : `Moved ${targets.length} elements`,
         targets,
-      );
-      if (!result.ok) {
-        handleFailedCommit(result);
-      }
+      ).then((result) => {
+        if (!result.ok) {
+          handleFailedCommit(result);
+        }
+      });
       return;
     }
-    const result = updateFrameElements(
+    void updateFrameElements(
       env(),
       `Resized ${current.elementName}`,
       [{ elementId: current.elementId, expected: current.origin, next: current.frame }],
-    );
-    if (!result.ok) {
-      handleFailedCommit(result);
-    }
+    ).then((result) => {
+      if (!result.ok) {
+        handleFailedCommit(result);
+      }
+    });
   }
 
   function handleGesturePointerCancel(event: PointerEvent<HTMLElement>): void {
@@ -583,12 +590,13 @@ export function CanvasStage({
     if (framesEqual(frame, current.frame)) {
       return;
     }
-    const result = updateFrameElements(env(), `Resized ${current.name}`, [
+    void updateFrameElements(env(), `Resized ${current.name}`, [
       { elementId: current.id, expected: current.frame, next: frame },
-    ]);
-    if (!result.ok) {
-      handleFailedCommit(result);
-    }
+    ]).then((result) => {
+      if (!result.ok) {
+        handleFailedCommit(result);
+      }
+    });
   }
 
   // --- Context menu -----------------------------------------------------------------
@@ -666,17 +674,18 @@ export function CanvasStage({
             ...ctx.actions,
             editText: (elementId) => startEditing(elementId, null),
             addText: (point) => {
-              const result = addTextElement(env(), point);
-              if (!result.ok) {
-                notify(result.notice);
-                return;
-              }
-              store.selectElement(result.elementId);
-              onToolModeChange('select');
-              const element = snapshot.presentation.slides[slideId].elements[result.elementId];
-              if (element?.kind === 'text') {
-                beginEditingCreatedElement(element);
-              }
+              void addTextElement(env(), point).then((result) => {
+                if (!result.ok) {
+                  notify(result.notice);
+                  return;
+                }
+                store.selectElement(result.elementId);
+                onToolModeChange('select');
+                const element = snapshot.presentation.slides[slideId].elements[result.elementId];
+                if (element?.kind === 'text') {
+                  beginEditingCreatedElement(element);
+                }
+              });
             },
           },
         }
@@ -703,14 +712,15 @@ export function CanvasStage({
     if (targets.length === 0) {
       return;
     }
-    const result = updateFrameElements(
+    void updateFrameElements(
       env(),
       targets.length === 1 ? `Moved ${slide.elements[targets[0].elementId].name}` : `Moved ${targets.length} elements`,
       targets,
-    );
-    if (!result.ok) {
-      handleFailedCommit(result);
-    }
+    ).then((result) => {
+      if (!result.ok) {
+        handleFailedCommit(result);
+      }
+    });
   }
 
   function handleEditorKeyDown(event: KeyboardEvent): void {
@@ -828,7 +838,11 @@ export function CanvasStage({
           <button onMouseDown={(event) => event.preventDefault()} onClick={cancelEditing} type="button">
             Use latest
           </button>
-          <button onMouseDown={(event) => event.preventDefault()} onClick={retryEditing} type="button">
+          <button
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void retryEditing()}
+            type="button"
+          >
             Try again
           </button>
         </div>

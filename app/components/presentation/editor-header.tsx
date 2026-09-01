@@ -1,4 +1,5 @@
 import { Link } from 'react-router';
+import { workspacePath } from '../../lib/presentation/location';
 import type { PresentationSnapshot } from '../../lib/presentation/store';
 import type { DrawerKind } from './command-registry';
 import { ThemeToggle } from '../theme-toggle';
@@ -7,10 +8,9 @@ export type { DrawerKind } from './command-registry';
 
 /**
  * The compact document header: mark, back affordance, document identity,
- * truthful session/save state, WebMCP status, and the on-demand panel
- * actions. Nothing here claims persistence, collaboration, sharing, or
- * presence that is not implemented — unavailable actions are disabled with
- * honest tooltips.
+ * saved revision, WebMCP status, and the on-demand panel actions. Nothing
+ * here claims collaboration, sharing, or presence that is not implemented —
+ * unavailable actions are disabled with honest tooltips.
  */
 export function EditorHeader({
   activeDrawer,
@@ -22,6 +22,7 @@ export function EditorHeader({
   pendingAgentChanges,
   snapshot,
   webMcpAvailable,
+  workspaceId,
 }: {
   activeDrawer: DrawerKind | null;
   canExport: boolean;
@@ -32,12 +33,20 @@ export function EditorHeader({
   pendingAgentChanges: number;
   snapshot: PresentationSnapshot;
   webMcpAvailable: boolean;
+  workspaceId: string;
 }) {
   const revision = snapshot.presentation.revision;
 
   return (
-    <header className="editor-header">
-      <Link aria-label="Back to home" className="hdr-mark" to="/" title="Back to home">C</Link>
+    <header className="app-header">
+      <Link
+        aria-label="Open workspace"
+        className="hdr-mark"
+        title="Open workspace"
+        to={workspacePath(workspaceId)}
+      >
+        C
+      </Link>
       <div className="hdr-divider" aria-hidden="true" />
       <div className="hdr-crumb">
         <div className="hdr-title">
@@ -48,9 +57,9 @@ export function EditorHeader({
       <div className="hdr-actions">
         <span
           className="hchip"
-          title="This preview keeps your work in browser memory only. Nothing leaves this device unless you export."
+          title="This project is saved. Reopening it restores this revision."
         >
-          Local draft · rev {revision}
+          Saved · rev {revision}
         </span>
         <span
           className={`hchip${webMcpAvailable ? ' is-live' : ''}`}
@@ -66,6 +75,16 @@ export function EditorHeader({
         <div className="hdr-divider" aria-hidden="true" />
         <button className="hbutton" onClick={onPresent} title="Present this deck full screen" type="button">
           Present
+        </button>
+        <button
+          aria-label="Export the presentation as PowerPoint"
+          className="hbutton is-brand"
+          disabled={!canExport}
+          onClick={onExport}
+          title="Download the current presentation as a PowerPoint file"
+          type="button"
+        >
+          Export .pptx
         </button>
         <button
           aria-pressed={activeDrawer === 'agent'}
@@ -93,16 +112,6 @@ export function EditorHeader({
           type="button"
         >
           Activity
-        </button>
-        <button
-          aria-label="Export the presentation as PowerPoint"
-          className="hbutton is-brand"
-          disabled={!canExport}
-          onClick={onExport}
-          title="Download the current presentation as a PowerPoint file"
-          type="button"
-        >
-          Export .pptx
         </button>
         <ThemeToggle />
       </div>

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { humanActor } from '../../lib/presentation/actors';
+import { DEMO_DISPLAY_NAME } from '../../lib/presentation/actors';
+import type { PresentationDocument } from '../../lib/presentation/document';
 import { presentationSlidePath } from '../../lib/presentation/location';
 import { downloadPptx } from '../../lib/presentation/pptx-download';
 import { PresentationStore, type PresentationSnapshot } from '../../lib/presentation/store';
+import { HttpProjectTransport } from '../../lib/presentation/transport';
 import { useWebMcp } from '../../lib/presentation/webmcp';
 import type { ChangeSet, Comment, TextStyle } from '../../types/presentation';
 import { AgentPanel } from './agent-panel';
@@ -48,16 +50,35 @@ function usePresentation(store: PresentationStore): PresentationSnapshot {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
 
-export function PresentationWorkspace() {
+/**
+ * The editor shell. The store bootstraps from the loader's canonical
+ * document (identical server render and client hydration) and talks to the
+ * project server through the HTTP transport; session-only state (selection,
+ * zoom, focus, tool mode) stays in local React state and the store session.
+ */
+export function PresentationWorkspace({
+  document,
+  slideId,
+  workspaceId,
+}: {
+  document: PresentationDocument;
+  slideId: string;
+  workspaceId: string;
+}) {
   const storeRef = useRef<PresentationStore | null>(null);
   if (storeRef.current === null) {
-    storeRef.current = new PresentationStore();
+    storeRef.current = new PresentationStore(
+      document,
+      slideId,
+      new HttpProjectTransport(),
+      document.presentation.id,
+    );
   }
 
-  return <Workspace store={storeRef.current} />;
+  return <Workspace store={storeRef.current} workspaceId={workspaceId} />;
 }
 
-function Workspace({ store }: { store: PresentationStore }) {
+function Workspace({ store, workspaceId }: { store: PresentationStore; workspaceId: string }) {
   const snapshot = usePresentation(store);
   const webMcpAvailable = useWebMcp(store);
   const navigate = useNavigate();
@@ -106,9 +127,9 @@ function Workspace({ store }: { store: PresentationStore }) {
       store.selectSlide(activeSlideId);
     }
     if (slideId !== activeSlideId) {
-      navigate(presentationSlidePath(snapshot.presentation.id, activeSlideId), { replace: true });
+      navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, activeSlideId), { replace: true });
     }
-  }, [activeSlideId, navigate, slideId, snapshot.presentation.id, snapshot.session.activeSlideId, store]);
+  }, [activeSlideId, navigate, slideId, workspaceId, snapshot.presentation.id, snapshot.session.activeSlideId, store]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -127,47 +148,47 @@ function Workspace({ store }: { store: PresentationStore }) {
 
   function openSlide(nextSlideId: string): void {
     store.selectSlide(nextSlideId);
-    navigate(presentationSlidePath(snapshot.presentation.id, nextSlideId));
+    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, nextSlideId));
   }
 
-  function addSlide(): void {
-    const result = commandAddSlide(env);
+  async function addSlide(): Promise<void> {
+    const result = await commandAddSlide(env);
     if (!result.ok) {
       notify(result.notice);
       return;
     }
     store.selectSlide(result.slideId);
-    navigate(presentationSlidePath(snapshot.presentation.id, result.slideId));
+    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, result.slideId));
   }
 
-  function addSlideAfter(slideId: string): void {
-    const result = commandAddSlideAfter(env, slideId);
+  async function addSlideAfter(slideId: string): Promise<void> {
+    const result = await commandAddSlideAfter(env, slideId);
     if (!result.ok) {
       notify(result.notice);
       return;
     }
     store.selectSlide(result.slideId);
-    navigate(presentationSlidePath(snapshot.presentation.id, result.slideId));
+    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, result.slideId));
   }
 
-  function duplicateSlide(slideId?: string): void {
+  async function duplicateSlide(slideId?: string): Promise<void> {
     const targetSlideId = slideId ?? activeSlide.id;
-    const result = commandDuplicateSlide(env, targetSlideId);
+    const result = await commandDuplicateSlide(env, targetSlideId);
     if (!result.ok) {
       notify(result.notice);
       return;
     }
     store.selectSlide(result.slideId);
-    navigate(presentationSlidePath(snapshot.presentation.id, result.slideId));
+    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, result.slideId));
   }
 
-  function deleteSlide(slideId?: string): void {
+  async function deleteSlide(slideId?: string): Promise<void> {
     const targetSlideId = slideId ?? activeSlide.id;
     if (snapshot.presentation.slideOrder.length <= 1) {
       notify('The final slide cannot be deleted.');
       return;
     }
-    const result = commandDeleteSlide(env, targetSlideId);
+    const result = await commandDeleteSlide(env, targetSlideId);
     if (!result.ok) {
       notify(result.notice);
     }
@@ -177,8 +198,8 @@ function Workspace({ store }: { store: PresentationStore }) {
 
   const selection = useMemo(() => deriveSelectionFlags(activeSlide, selectedIds), [activeSlide, selectedIds]);
 
-  function duplicateSelection(): void {
-    const result = duplicateElements(env, selectedIds);
+  async function duplicateSelection(): Promise<void> {
+    const result = await duplicateElements(env, selectedIds);
     if (!result.ok) {
       notify(result.notice);
       return;
@@ -186,42 +207,42 @@ function Workspace({ store }: { store: PresentationStore }) {
     store.selectElements(result.newIds);
   }
 
-  function deleteSelection(): void {
-    const result = deleteElements(env, selectedIds);
+  async function deleteSelection(): Promise<void> {
+    const result = await deleteElements(env, selectedIds);
     if (!result.ok) {
       notify(result.notice);
     }
   }
 
-  function alignSelection(alignment: Alignment): void {
-    const result = alignElements(env, selectedIds, alignment);
+  async function alignSelection(alignment: Alignment): Promise<void> {
+    const result = await alignElements(env, selectedIds, alignment);
     if (!result.ok) {
       notify(result.notice);
     }
   }
 
-  function reorderSelection(direction: ElementOrderDirection): void {
-    const result = reorderElements(env, selectedIds, direction);
+  async function reorderSelection(direction: ElementOrderDirection): Promise<void> {
+    const result = await reorderElements(env, selectedIds, direction);
     if (!result.ok) {
       notify(result.notice);
     }
   }
 
   /** The single-selection style commit, read fresh against the current selection. */
-  function applyTextStyle(style: TextStyle): void {
+  async function applyTextStyle(style: TextStyle): Promise<void> {
     const element = selection.singleUnlockedText;
     if (!element) {
       return;
     }
-    const result = updateTextStyle(env, element, style);
+    const result = await updateTextStyle(env, element, style);
     if (!result.ok) {
       notify(result.notice);
     }
   }
 
   /** Registry menu creation: a canonical shape at the menu point, selected after creation. */
-  function addShapeElementAt(point?: { x: number; y: number }): void {
-    const result = addShapeElement(env, point);
+  async function addShapeElementAt(point?: { x: number; y: number }): Promise<void> {
+    const result = await addShapeElement(env, point);
     if (!result.ok) {
       notify(result.notice);
       return;
@@ -237,13 +258,13 @@ function Workspace({ store }: { store: PresentationStore }) {
     if (comment.elementId) {
       store.selectElement(comment.elementId);
     }
-    navigate(presentationSlidePath(snapshot.presentation.id, comment.slideId));
+    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, comment.slideId));
     setDrawer(null);
   }
 
-  function resolveComment(comment: Comment): void {
-    const result = store.dispatch({
-      actor: humanActor,
+  async function resolveComment(comment: Comment): Promise<void> {
+    const result = await store.dispatch({
+      actorKind: 'human',
       label: 'Resolved a comment',
       operations: [
         {
@@ -257,17 +278,17 @@ function Workspace({ store }: { store: PresentationStore }) {
     notify(result.ok ? 'Comment resolved.' : 'That comment could not be resolved. Please try again.');
   }
 
-  function addComment(body: string): boolean {
+  async function addComment(body: string): Promise<boolean> {
     const comment: Comment = {
       id: crypto.randomUUID(),
-      actor: humanActor,
+      actor: { id: 'client', kind: 'human', name: DEMO_DISPLAY_NAME },
       body,
       createdAt: new Date().toISOString(),
       resolved: false,
       slideId: activeSlide.id,
     };
-    const result = store.dispatch({
-      actor: humanActor,
+    const result = await store.dispatch({
+      actorKind: 'human',
       label: 'Left a comment',
       operations: [{ type: 'add_comment', comment }],
     });
@@ -280,8 +301,8 @@ function Workspace({ store }: { store: PresentationStore }) {
 
   // --- Agent / history -----------------------------------------------------------
 
-  function revertAgentChange(changeSet: ChangeSet): void {
-    const reverted = store.revertAgentChange(changeSet.id);
+  async function revertAgentChange(changeSet: ChangeSet): Promise<void> {
+    const reverted = await store.revertAgentChange(changeSet.id);
     notify(
       reverted
         ? 'The agent change set was reverted.'
@@ -289,13 +310,13 @@ function Workspace({ store }: { store: PresentationStore }) {
     );
   }
 
-  function undoHumanChange(): void {
-    const undone = store.undoLatestHumanChange();
+  async function undoHumanChange(): Promise<void> {
+    const undone = await store.undoLatestHumanChange();
     notify(undone ? 'Your latest change was undone.' : 'There is no safe human change to undo.');
   }
 
-  function redoHumanChange(): void {
-    const redone = store.redoLatestHumanChange();
+  async function redoHumanChange(): Promise<void> {
+    const redone = await store.redoLatestHumanChange();
     notify(redone ? 'Your latest undone change was redone.' : 'There is no safe change to redo.');
   }
 
@@ -345,6 +366,11 @@ function Workspace({ store }: { store: PresentationStore }) {
    * same command vocabulary from here, and no per-surface arrays or props
    * duplicate it. The actions wrap the canonical `./commands` functions and
    * the store; the registry never reimplements kernel logic.
+   *
+   * Canonical actions are async: they resolve after server acceptance and
+   * never reject (failures surface through `notify`), and every mutation is
+   * serialized at the store boundary, so the fire-and-forget invocation from
+   * menu/keyboard surfaces is ordered and safe.
    */
   const ctx: CommandContext = useMemo(
     () => ({
@@ -531,6 +557,7 @@ function Workspace({ store }: { store: PresentationStore }) {
         pendingAgentChanges={pendingAgentChanges}
         snapshot={snapshot}
         webMcpAvailable={webMcpAvailable}
+        workspaceId={workspaceId}
       />
       <CommandBar ctx={ctx} />
 

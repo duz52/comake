@@ -1,5 +1,4 @@
 import { actorMatches } from './actors';
-import { createLaunchDeck } from './deck';
 import type {
   Actor,
   ChangeSet,
@@ -174,6 +173,13 @@ export interface DispatchRequest {
   baseRevision?: number;
   label: string;
   operations: PresentationOperation[];
+  /**
+   * Canonical revert marker: when set, the accepted dispatch also marks the
+   * referenced earlier change set as reverted, atomically with the operation
+   * batch. The store's undo and agent-revert paths own this; a change set
+   * can only be reverted once, and the marker survives every read.
+   */
+  revertsChangeSetId?: string;
 }
 
 /** Canonical persisted document state. JSON-serializable; no session/UI data. */
@@ -351,14 +357,22 @@ function cloneShapeStyle(style: ShapeStyle): ShapeStyle {
   };
 }
 
-function cloneElement(element: PresentationElement): PresentationElement {
+/**
+ * The kernel's deep element copy; shared with the template cloner so the model
+ * has exactly one copy semantics.
+ */
+export function cloneElement(element: PresentationElement): PresentationElement {
   if (element.kind === 'text') {
     return { ...element, frame: cloneFrame(element.frame), style: cloneTextStyle(element.style) };
   }
   return { ...element, frame: cloneFrame(element.frame), style: cloneShapeStyle(element.style) };
 }
 
-function cloneSlide(slide: Slide): Slide {
+/**
+ * The kernel's deep slide copy; shared with the template cloner so the model
+ * has exactly one copy semantics.
+ */
+export function cloneSlide(slide: Slide): Slide {
   return {
     ...slide,
     elementOrder: [...slide.elementOrder],
@@ -1085,15 +1099,6 @@ function applyOperations(
 
 // --- Document lifecycle ------------------------------------------------------
 
-export function createInitialPresentationDocument(): PresentationDocument {
-  return {
-    presentation: createLaunchDeck(),
-    comments: {},
-    changeSets: {},
-    changeSetOrder: [],
-  };
-}
-
 function appendChangeSet(
   document: PresentationDocument,
   changeSet: ChangeSet,
@@ -1201,6 +1206,30 @@ export function dispatchPresentationDocument(
   if (request.operations.length === 0) {
     return { ok: false, failure: { code: 'INVALID_INPUT', detail: 'At least one operation is required.' } };
   }
+  const revertTarget =
+    request.revertsChangeSetId === undefined
+      ? undefined
+      : document.changeSets[request.revertsChangeSetId];
+  if (request.revertsChangeSetId !== undefined) {
+    if (!revertTarget) {
+      return {
+        ok: false,
+        failure: {
+          code: 'NOT_FOUND',
+          detail: `No change set "${request.revertsChangeSetId}" exists to revert.`,
+        },
+      };
+    }
+    if (revertTarget.revertedAt !== undefined) {
+      return {
+        ok: false,
+        failure: {
+          code: 'CONFLICT',
+          detail: `Change set "${request.revertsChangeSetId}" is already reverted.`,
+        },
+      };
+    }
+  }
 
   // Ownership boundary: take the caller's operations once; everything the
   // dispatch stores or derives references these kernel-owned clones.
@@ -1220,7 +1249,7 @@ export function dispatchPresentationDocument(
     revision: currentRevision + 1,
     createdAt: new Date().toISOString(),
   };
-  const nextDocument = trimChangeSets(
+  let nextDocument = trimChangeSets(
     appendChangeSet(
       {
         ...result.document,
@@ -1232,6 +1261,26 @@ export function dispatchPresentationDocument(
       changeSet,
     ),
   );
+
+  // Mark the reverted change set in the same atomic document. The append may
+  // have trimmed it (reverting the oldest entry of a full window): the revert
+  // succeeded and the target is no longer visible, so there is nothing left
+  // to mark — matching the store's bounded-window semantics.
+  if (request.revertsChangeSetId !== undefined) {
+    const canonicalTarget = nextDocument.changeSets[request.revertsChangeSetId];
+    if (canonicalTarget) {
+      nextDocument = {
+        ...nextDocument,
+        changeSets: {
+          ...nextDocument.changeSets,
+          [request.revertsChangeSetId]: {
+            ...canonicalTarget,
+            revertedAt: changeSet.createdAt,
+          },
+        },
+      };
+    }
+  }
 
   return { ok: true, changeSet, document: nextDocument };
 }

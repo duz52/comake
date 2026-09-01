@@ -1,10 +1,18 @@
-import { LAUNCH_DECK_ID, LAUNCH_DECK_INITIAL_SLIDE_ID, LAUNCH_WORKSPACE_ID } from './deck';
+/**
+ * The public workspace display slug. It is a URL label only and is never an
+ * authorization identity; registry shards are addressed from the verified
+ * demo principal's workspace key.
+ */
+export const CANONICAL_WORKSPACE_ID = 'comake';
 
-export function presentationSlidePath(presentationId: string, slideId: string): string {
-  return `/workspace/${LAUNCH_WORKSPACE_ID}/presentation/${presentationId}/slide/${slideId}`;
+export function workspacePath(workspaceId: string): string {
+  return `/workspace/${workspaceId}`;
 }
 
-export const initialPresentationPath = presentationSlidePath(
-  LAUNCH_DECK_ID,
-  LAUNCH_DECK_INITIAL_SLIDE_ID,
-);
+export function presentationPath(workspaceId: string, presentationId: string): string {
+  return `${workspacePath(workspaceId)}/presentation/${presentationId}`;
+}
+
+export function presentationSlidePath(workspaceId: string, presentationId: string, slideId: string): string {
+  return `${presentationPath(workspaceId, presentationId)}/slide/${slideId}`;
+}

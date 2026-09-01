@@ -1,4 +1,4 @@
-import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import type { Frame } from '../../types/presentation';
 
 /**

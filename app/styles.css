@@ -210,7 +210,12 @@ select:focus-visible,
 
 /* --- Header (46px) ---------------------------------------------------------- */
 
-.editor-header {
+/* Shared app chrome for the editor and the workspace home. Sticky on the
+ * scrolling document home; a no-op inside the fixed-height editor. */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2124,6 +2129,275 @@ select:focus-visible,
   font-weight: 600;
 }
 
+/* --- Workspace home ------------------------------------------------------------------------
+ * Dense document home on the shared app chrome: title/action row, the
+ * template creation card (preview rendered from the immutable template data)
+ * and the persisted project list. Separation and spacing carry the page;
+ * cards stay at one quiet elevation (border plus surface-raised).
+ * ---------------------------------------------------------------------------------------- */
+
+.workspace-app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background: var(--background);
+}
+
+.workspace-container {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 30px 28px 64px;
+}
+
+.hdr-title .hchip {
+  flex: none;
+}
+
+.ws-hero-create {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.ws-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.ws-hero-copy {
+  min-width: 0;
+}
+
+.ws-hero-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ws-hero-meta {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.ws-create {
+  margin-bottom: 34px;
+}
+
+.ws-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ws-section-title {
+  margin: 0;
+  color: var(--text-muted);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ws-section-meta {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.ws-template-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.ws-template-card {
+  display: grid;
+  grid-template-columns: minmax(0, 430px) minmax(0, 1fr);
+  gap: 22px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.ws-template-preview {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-sunken);
+}
+
+.ws-template-slide {
+  position: absolute;
+  inset: 0;
+}
+
+.ws-template-form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+
+.ws-template-form-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.ws-template-name {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ws-template-slides {
+  color: var(--text-faint);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.ws-field-label {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.ws-title-input {
+  width: min(100%, 360px);
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.ws-title-input:focus {
+  border-color: var(--accent-line);
+}
+
+.ws-form-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-line);
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: 11px;
+}
+
+.ws-use-template {
+  margin-top: 2px;
+}
+
+.ws-recent {
+  margin-bottom: 28px;
+}
+
+.ws-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.ws-project-row:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-raised);
+}
+
+.ws-project-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-project-template {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-project-date {
+  color: var(--text-faint);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.ws-project-open {
+  justify-self: end;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ws-empty {
+  padding: 34px 20px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.ws-empty-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ws-empty-body {
+  margin: 6px 0 14px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.ws-empty .ws-form-error {
+  margin: 10px auto 0;
+  max-width: 28rem;
+  text-align: left;
+}
+
 /* --- Utility / error route ---------------------------------------------------------------- */
 
 .route-error {
@@ -2135,11 +2409,149 @@ select:focus-visible,
   font-family: Inter, sans-serif;
 }
 
-/* --- Responsive: narrow viewports collapse the inspector to drawers ----------------- */
+/* --- Responsive: narrow viewports drop the header status chips ----------------------- */
+/* The header keeps every action in its scrollable action strip; the chips are the first
+ * surface to shed because the revision/WebMCP status is the least time-critical fact. */
 
 @media (max-width: 1120px) {
   .hchip {
     display: none;
+  }
+}
+
+/* --- Responsive: the editor becomes a phone composition -------------------------------- */
+/*
+ * Below the workspace-home phone breakpoint the editor stops being the desktop
+ * three-column grid with a fixed 188px slide rail. The rail becomes a compact
+ * horizontal filmstrip (one thumbnail per slide, the same per-slide menus, the
+ * same Add slide action) so the canvas owns the full width and stays the
+ * dominant working surface; the status bar compacts to one priority line; the
+ * command bar keeps its width-tier planner, which already moves contextual
+ * clusters into the ⋯ overflow menu instead of clipping. Every desktop surface
+ * stays present — nothing is hidden by overflow, nothing loses its action.
+ */
+@media (max-width: 720px) {
+  .editor-main,
+  .editor-main.inspector-closed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  /* The slide rail: a horizontal filmstrip between the command bar and the canvas. */
+  .slide-rail {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 8px;
+    height: 100px;
+    padding: 7px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .rail-head {
+    display: none;
+  }
+
+  .rail-scroll {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .slide-item {
+    flex: none;
+    width: 96px;
+    margin-bottom: 0;
+    padding: 3px;
+  }
+
+  /* Touch has no hover state: the per-slide menu trigger stays visible. */
+  .slide-item-more {
+    opacity: 1;
+  }
+
+  .rail-add {
+    flex: none;
+    align-self: center;
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  /* One compact status line: slide position + selection on the left, revision on
+   * the right. The shortcut hint and the physical slide size are desktop context
+   * and drop out below the breakpoint. */
+  .status-hint,
+  .status-dims {
+    display: none;
+  }
+
+  /* The scrollable strips read as clean surfaces on phones; the scroll gesture
+   * itself stays intact. */
+  .app-header .hdr-actions,
+  .command-bar,
+  .slide-rail,
+  .rail-scroll {
+    scrollbar-width: none;
+  }
+
+  .app-header .hdr-actions::-webkit-scrollbar,
+  .command-bar::-webkit-scrollbar,
+  .slide-rail::-webkit-scrollbar,
+  .rail-scroll::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* --- Responsive: the workspace home collapses explicitly on phones ------------------ */
+
+@media (max-width: 720px) {
+  .workspace-container {
+    padding: 22px 16px 48px;
+  }
+
+  .ws-hero {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .ws-hero-create {
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  .ws-template-card {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .ws-project-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px 14px;
+    padding: 10px 12px;
+  }
+
+  .ws-project-template,
+  .ws-project-created {
+    display: none;
+  }
+
+  .ws-project-edited {
+    align-self: start;
+  }
+
+  .ws-project-open {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
   }
 }
 

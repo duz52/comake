@@ -1,5 +1,5 @@
 import type { CSSProperties, FocusEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
-import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import type { PresentationSnapshot } from '../../lib/presentation/store';
 import type { Frame, PresentationElement } from '../../types/presentation';
 import { moveGestureFrame, type GestureState, type ResizeDirection } from './gesture';

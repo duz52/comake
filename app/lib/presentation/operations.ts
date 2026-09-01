@@ -1,5 +1,5 @@
-import { actorMatches, agentActor, knownActors } from './actors';
-import { SLIDE_HEIGHT, SLIDE_WIDTH } from './deck';
+import { DEMO_DISPLAY_NAME, isActorKind } from './actors';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from './canvas';
 import { frameFitsPresentation, isCanonicalColor, strokeDashes } from './document';
 import type {
   Actor,
@@ -476,20 +476,21 @@ function parseSlide(value: unknown, subject: string): ParseResult<Slide> {
   return { ok: true, value: slide };
 }
 
-function parseKnownActor(value: unknown, subject: string): ParseResult<Actor> {
+function parseActor(value: unknown, subject: string): ParseResult<Actor> {
   if (!isRecord(value)) {
     return parseFailure(`${subject} must be an object.`);
   }
   const unknownKey = rejectUnknownKeys(value, ['id', 'kind', 'name'], subject);
   if (unknownKey) return parseFailure(unknownKey);
 
-  const known = knownActors.find(
-    (actor) => actor.id === value.id && actor.kind === value.kind && actor.name === value.name,
-  );
-  if (!known) {
-    return parseFailure(`${subject} must be one of the known Comake actors.`);
+  const id = parseNonEmptyString(value.id, `${subject}.id`);
+  if (!id.ok) return id;
+  if (!isActorKind(value.kind)) {
+    return parseFailure(`${subject}.kind must be one of "human", "agent", "system".`);
   }
-  return { ok: true, value: known };
+  const name = parseNonEmptyString(value.name, `${subject}.name`);
+  if (!name.ok) return name;
+  return { ok: true, value: { id: id.value, kind: value.kind, name: name.value } };
 }
 
 function parseTimestamp(value: unknown, subject: string): ParseResult<string> {
@@ -508,8 +509,14 @@ function parseComment(value: unknown, subject: string): ParseResult<Comment> {
 
   const id = parseNonEmptyString(value.id, `${subject}.id`);
   if (!id.ok) return id;
-  const actor = parseKnownActor(value.actor, `${subject}.actor`);
-  if (!actor.ok) return actor;
+  let actor: Actor;
+  if (value.actor === undefined) {
+    actor = { id: 'client', kind: 'human', name: DEMO_DISPLAY_NAME };
+  } else {
+    const parsedActor = parseActor(value.actor, `${subject}.actor`);
+    if (!parsedActor.ok) return parsedActor;
+    actor = parsedActor.value;
+  }
   const body = parseNonEmptyString(value.body, `${subject}.body`);
   if (!body.ok) return body;
   const createdAt = parseTimestamp(value.createdAt, `${subject}.createdAt`);
@@ -521,7 +528,7 @@ function parseComment(value: unknown, subject: string): ParseResult<Comment> {
 
   const comment: Comment = {
     id: id.value,
-    actor: actor.value,
+    actor,
     body: body.value,
     createdAt: createdAt.value,
     resolved: resolved.value,
@@ -533,16 +540,6 @@ function parseComment(value: unknown, subject: string): ParseResult<Comment> {
   if (elementId.value !== undefined) comment.elementId = elementId.value;
 
   return { ok: true, value: comment };
-}
-
-/** Comments written through the WebMCP contract are always agent-attributed. */
-function parseAgentComment(value: unknown, subject: string): ParseResult<Comment> {
-  const comment = parseComment(value, subject);
-  if (!comment.ok) return comment;
-  if (!actorMatches(comment.value.actor, agentActor)) {
-    return parseFailure(`${subject}.actor must be the Comake agent identity.`);
-  }
-  return comment;
 }
 
 // --- Operation parser ----------------------------------------------------------
@@ -830,7 +827,7 @@ export function parseOperation(value: unknown): ParseResult<PresentationOperatio
     case 'add_comment': {
       const unknownKey = rejectUnknownKeys(value, ['comment', 'type'], 'add_comment operation');
       if (unknownKey) return parseFailure(unknownKey);
-      const comment = parseAgentComment(value.comment, 'add_comment operation.comment');
+      const comment = parseComment(value.comment, 'add_comment operation.comment');
       if (!comment.ok) return comment;
 
       return { ok: true, value: { type, comment: comment.value } };
@@ -1091,34 +1088,32 @@ const slideSchema = {
   additionalProperties: false,
 };
 
-const knownActorSchema = {
-  oneOf: knownActors.map((actor) => ({ const: actor })),
+const actorSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', minLength: 1 },
+    kind: { enum: ['human', 'agent', 'system'] },
+    name: { type: 'string', minLength: 1 },
+  },
+  required: ['id', 'kind', 'name'],
+  additionalProperties: false,
+  description:
+    'Attribution is assigned by the server from the verified session; client-supplied actor fields are ignored.',
 };
 
 const commentSchema = {
   type: 'object',
   properties: {
     id: { type: 'string', minLength: 1 },
-    actor: knownActorSchema,
+    actor: actorSchema,
     body: { type: 'string', minLength: 1 },
     createdAt: { type: 'string', format: 'date-time' },
     elementId: { type: 'string', minLength: 1 },
     resolved: { type: 'boolean' },
     slideId: { type: 'string', minLength: 1 },
   },
-  required: ['id', 'actor', 'body', 'createdAt', 'resolved', 'slideId'],
+  required: ['id', 'body', 'createdAt', 'resolved', 'slideId'],
   additionalProperties: false,
-};
-
-const agentCommentSchema = {
-  ...commentSchema,
-  properties: {
-    ...commentSchema.properties,
-    actor: {
-      const: agentActor,
-      description: 'Must be exactly the Comake agent identity; comments written through this tool are always agent-attributed.',
-    },
-  },
 };
 
 const updateTextOperationSchema = {
@@ -1289,7 +1284,7 @@ const addCommentOperationSchema = {
   type: 'object',
   properties: {
     type: { const: 'add_comment' },
-    comment: agentCommentSchema,
+    comment: commentSchema,
   },
   required: ['type', 'comment'],
   additionalProperties: false,

@@ -79,53 +79,58 @@ export function InspectorPanel({
   const selectedElement = primaryId ? slide.elements[primaryId] : undefined;
   const env: CommandEnv = { slideId, snapshot, store };
 
-  function commitText(element: TextElement, text: string): boolean {
-    const result = updateText(env, element, text);
-    if (!result.ok) {
-      notify(result.notice);
-    }
-    return result.ok;
+  function commitText(element: TextElement, text: string): Promise<boolean> {
+    return updateText(env, element, text).then((result) => {
+      if (!result.ok) {
+        notify(result.notice);
+      }
+      return result.ok;
+    });
   }
 
-  function commitFrame(element: PresentationElement, frame: Frame): boolean {
+  function commitFrame(element: PresentationElement, frame: Frame): Promise<boolean> {
     if (framesEqual(frame, element.frame)) {
-      return true;
+      return Promise.resolve(true);
     }
     const moved = frame.x !== element.frame.x || frame.y !== element.frame.y;
     const resized = frame.width !== element.frame.width || frame.height !== element.frame.height;
     const label =
       moved && resized ? `Updated ${element.name}` : moved ? `Moved ${element.name}` : `Resized ${element.name}`;
-    const result = updateFrameElements(env, label, [
+    return updateFrameElements(env, label, [
       { elementId: element.id, expected: element.frame, next: frame },
-    ]);
-    if (!result.ok) {
-      notify(result.notice);
-    }
-    return result.ok;
+    ]).then((result) => {
+      if (!result.ok) {
+        notify(result.notice);
+      }
+      return result.ok;
+    });
   }
 
-  function commitShapeStyle(element: ShapeElement, style: ShapeStyle): boolean {
-    const result = updateShapeStyle(env, element, style);
-    if (!result.ok) {
-      notify(result.notice);
-    }
-    return result.ok;
+  function commitShapeStyle(element: ShapeElement, style: ShapeStyle): Promise<boolean> {
+    return updateShapeStyle(env, element, style).then((result) => {
+      if (!result.ok) {
+        notify(result.notice);
+      }
+      return result.ok;
+    });
   }
 
-  function commitTextStyle(element: TextElement, style: TextStyle): boolean {
-    const result = updateTextStyle(env, element, style);
-    if (!result.ok) {
-      notify(result.notice);
-    }
-    return result.ok;
+  function commitTextStyle(element: TextElement, style: TextStyle): Promise<boolean> {
+    return updateTextStyle(env, element, style).then((result) => {
+      if (!result.ok) {
+        notify(result.notice);
+      }
+      return result.ok;
+    });
   }
 
-  function commitSlideProperties(slide: Slide, patch: SlidePropertiesPatch): boolean {
-    const result = updateSlideProperties(env, slide, patch);
-    if (!result.ok) {
-      notify(result.notice);
-    }
-    return result.ok;
+  function commitSlideProperties(slide: Slide, patch: SlidePropertiesPatch): Promise<boolean> {
+    return updateSlideProperties(env, slide, patch).then((result) => {
+      if (!result.ok) {
+        notify(result.notice);
+      }
+      return result.ok;
+    });
   }
 
   return (
@@ -240,7 +245,7 @@ function SlideProperties({
   slide,
 }: {
   env: CommandEnv;
-  onCommit: (slide: Slide, patch: SlidePropertiesPatch) => boolean;
+  onCommit: (slide: Slide, patch: SlidePropertiesPatch) => Promise<boolean>;
   slide: Slide;
 }) {
   const [nameDraft, setNameDraft] = useState(slide.name);
@@ -295,7 +300,7 @@ function SlideProperties({
     }
   }
 
-  function commitName(): void {
+  async function commitName(): Promise<void> {
     const name = nameDraft.trim();
     if (name.length === 0 || name === slide.name) {
       setNameDraft(slide.name);
@@ -303,13 +308,13 @@ function SlideProperties({
       setNameEdited(false);
       return;
     }
-    if (onCommit(slide, { name })) {
+    if (await onCommit(slide, { name })) {
       setBaseName(name);
       setNameEdited(false);
     }
   }
 
-  function commitNotes(): void {
+  async function commitNotes(): Promise<void> {
     const notes = notesDraft.trim();
     if (notes === (slide.notes ?? '')) {
       setNotesDraft(slide.notes ?? '');
@@ -317,13 +322,13 @@ function SlideProperties({
       setNotesEdited(false);
       return;
     }
-    if (onCommit(slide, notes.length === 0 ? { notes: null } : { notes })) {
+    if (await onCommit(slide, notes.length === 0 ? { notes: null } : { notes })) {
       setBaseNotes(notes);
       setNotesEdited(false);
     }
   }
 
-  function commitBackground(background: string): void {
+  async function commitBackground(background: string): Promise<void> {
     const color = background.toLowerCase();
     setPickedBackground(null);
     if (color === slide.background) {
@@ -332,7 +337,7 @@ function SlideProperties({
       setBackgroundEdited(false);
       return;
     }
-    if (onCommit(slide, { background: color })) {
+    if (await onCommit(slide, { background: color })) {
       setBackgroundDraft(color);
       setBaseBackground(color);
       setBackgroundEdited(false);
@@ -341,17 +346,17 @@ function SlideProperties({
 
   function commitPickedBackground(): void {
     if (pickedBackground) {
-      commitBackground(pickedBackground);
+      void commitBackground(pickedBackground);
     }
   }
 
-  function commitBackgroundHex(): void {
+  async function commitBackgroundHex(): Promise<void> {
     const color = backgroundDraft.trim();
     if (!HEX_COLOR_PATTERN.test(color)) {
       setBackgroundDraft(slide.background);
       return;
     }
-    commitBackground(color);
+    await commitBackground(color);
   }
 
   return (
@@ -367,7 +372,7 @@ function SlideProperties({
             <input
               aria-label="Slide name"
               className="field-input"
-              onBlur={commitName}
+              onBlur={() => void commitName()}
               onChange={(event) => {
                 beginNameEdit();
                 setNameDraft(event.currentTarget.value);
@@ -375,7 +380,7 @@ function SlideProperties({
               onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  commitName();
+                  void commitName();
                 }
               }}
               value={nameDraft}
@@ -400,7 +405,7 @@ function SlideProperties({
               <input
                 aria-label="Slide background hex"
                 className="field-input"
-                onBlur={commitBackgroundHex}
+                onBlur={() => void commitBackgroundHex()}
                 onChange={(event) => {
                   beginBackgroundEdit();
                   setBackgroundDraft(event.currentTarget.value);
@@ -408,7 +413,7 @@ function SlideProperties({
                 onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
                   if (event.key === 'Enter') {
                     event.preventDefault();
-                    commitBackgroundHex();
+                    void commitBackgroundHex();
                   }
                 }}
                 spellCheck={false}
@@ -423,7 +428,7 @@ function SlideProperties({
           <textarea
             aria-label="Speaker notes"
             className="field-textarea"
-            onBlur={commitNotes}
+            onBlur={() => void commitNotes()}
             onChange={(event) => {
               beginNotesEdit();
               setNotesDraft(event.currentTarget.value);
@@ -474,7 +479,7 @@ function TextContentField({
 }: {
   disabled: boolean;
   element: TextElement;
-  onCommit: (text: string) => boolean;
+  onCommit: (text: string) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState(element.text);
   const [dirty, setDirty] = useState(false);
@@ -490,8 +495,8 @@ function TextContentField({
     }
   }, [dirty, element.text]);
 
-  function commit(): void {
-    if (onCommit(draft)) {
+  async function commit(): Promise<void> {
+    if (await onCommit(draft)) {
       setDirty(false);
       setBaseText(draft);
     }
@@ -504,7 +509,7 @@ function TextContentField({
         <textarea
           className="field-textarea"
           disabled={disabled}
-          onBlur={commit}
+          onBlur={() => void commit()}
           onChange={(event) => {
             // Capture the canonical baseline once, when editing begins, so an
             // external change mid-edit still surfaces as review.
@@ -517,7 +522,7 @@ function TextContentField({
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
               event.preventDefault();
-              commit();
+              void commit();
             }
           }}
           rows={4}
@@ -568,7 +573,7 @@ function TypographySection({
   onCommit,
 }: {
   element: TextElement;
-  onCommit: (style: TextStyle) => boolean;
+  onCommit: (style: TextStyle) => Promise<boolean>;
 }) {
   const { style } = element;
   const [sizeDraft, setSizeDraft] = useState(String(style.fontSize));
@@ -602,9 +607,9 @@ function TypographySection({
   }, [colorEdited, letterSpacingEdited, lineHeightEdited, sizeEdited, style]);
 
   /** Commit the full canonical style with one patched field; record the new baseline on success. */
-  function commit(patch: Partial<TextStyle>): boolean {
+  async function commit(patch: Partial<TextStyle>): Promise<boolean> {
     const next = { ...style, ...patch };
-    if (onCommit(next)) {
+    if (await onCommit(next)) {
       setBaseStyle(next);
       return true;
     }
@@ -639,7 +644,7 @@ function TypographySection({
     setColorEdited(true);
   }
 
-  function commitSize(): void {
+  async function commitSize(): Promise<void> {
     const fontSize = Number.parseFloat(sizeDraft);
     if (!Number.isFinite(fontSize) || fontSize <= 0) {
       setSizeDraft(String(style.fontSize));
@@ -647,12 +652,12 @@ function TypographySection({
       return;
     }
     setSizeDraft(String(fontSize));
-    if (commit({ fontSize })) {
+    if (await commit({ fontSize })) {
       setSizeEdited(false);
     }
   }
 
-  function commitLineHeight(): void {
+  async function commitLineHeight(): Promise<void> {
     const lineHeight = Number.parseFloat(lineHeightDraft);
     if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
       setLineHeightDraft(String(style.lineHeight ?? 1.4));
@@ -660,12 +665,12 @@ function TypographySection({
       return;
     }
     setLineHeightDraft(String(lineHeight));
-    if (commit({ lineHeight })) {
+    if (await commit({ lineHeight })) {
       setLineHeightEdited(false);
     }
   }
 
-  function commitLetterSpacing(): void {
+  async function commitLetterSpacing(): Promise<void> {
     const letterSpacing = Number.parseFloat(letterSpacingDraft);
     if (!Number.isFinite(letterSpacing)) {
       setLetterSpacingDraft(String(style.letterSpacing ?? 0));
@@ -673,12 +678,12 @@ function TypographySection({
       return;
     }
     setLetterSpacingDraft(String(letterSpacing));
-    if (commit({ letterSpacing })) {
+    if (await commit({ letterSpacing })) {
       setLetterSpacingEdited(false);
     }
   }
 
-  function commitColor(): void {
+  async function commitColor(): Promise<void> {
     const color = hexDraft.trim().toLowerCase();
     if (!HEX_COLOR_PATTERN.test(color)) {
       setHexDraft(style.color);
@@ -686,19 +691,19 @@ function TypographySection({
       return;
     }
     setHexDraft(color);
-    if (commit({ color })) {
+    if (await commit({ color })) {
       setColorEdited(false);
     }
   }
 
-  function commitPickedColor(): void {
+  async function commitPickedColor(): Promise<void> {
     if (!pickedColor) {
       return;
     }
     const color = pickedColor.toLowerCase();
     setPickedColor(null);
     setHexDraft(color);
-    if (commit({ color })) {
+    if (await commit({ color })) {
       setColorEdited(false);
     }
   }
@@ -728,7 +733,7 @@ function TypographySection({
           <select
             aria-label="Font family"
             className="field-select"
-            onChange={(event) => commit({ fontFamily: event.currentTarget.value })}
+            onChange={(event) => void commit({ fontFamily: event.currentTarget.value })}
             value={style.fontFamily}
           >
             {FONT_FAMILIES.map((family) => (
@@ -744,7 +749,7 @@ function TypographySection({
             aria-label="Font size"
             className="field-input"
             min={1}
-            onBlur={commitSize}
+            onBlur={() => void commitSize()}
             onChange={(event) => {
               beginSizeEdit();
               setSizeDraft(event.currentTarget.value);
@@ -752,7 +757,7 @@ function TypographySection({
             onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
               if (event.key === 'Enter') {
                 event.preventDefault();
-                commitSize();
+                void commitSize();
               }
             }}
             step={1}
@@ -766,7 +771,7 @@ function TypographySection({
             aria-label="Font weight"
             className="field-select"
             onChange={(event) =>
-              commit({ fontWeight: Number(event.currentTarget.value) as TextStyle['fontWeight'] })
+              void commit({ fontWeight: Number(event.currentTarget.value) as TextStyle['fontWeight'] })
             }
             value={style.fontWeight ?? 400}
           >
@@ -783,7 +788,7 @@ function TypographySection({
             aria-label="Line height"
             className="field-input"
             min={0.1}
-            onBlur={commitLineHeight}
+            onBlur={() => void commitLineHeight()}
             onChange={(event) => {
               beginLineHeightEdit();
               setLineHeightDraft(event.currentTarget.value);
@@ -791,7 +796,7 @@ function TypographySection({
             onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
               if (event.key === 'Enter') {
                 event.preventDefault();
-                commitLineHeight();
+                void commitLineHeight();
               }
             }}
             step={0.1}
@@ -804,7 +809,7 @@ function TypographySection({
           <input
             aria-label="Letter spacing"
             className="field-input"
-            onBlur={commitLetterSpacing}
+            onBlur={() => void commitLetterSpacing()}
             onChange={(event) => {
               beginLetterSpacingEdit();
               setLetterSpacingDraft(event.currentTarget.value);
@@ -812,7 +817,7 @@ function TypographySection({
             onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
               if (event.key === 'Enter') {
                 event.preventDefault();
-                commitLetterSpacing();
+                void commitLetterSpacing();
               }
             }}
             step={0.1}
@@ -828,7 +833,7 @@ function TypographySection({
               className="color-well"
               // One draft; the picker commits once at blur, never per drag
               // step, so a drag cannot flood the change history.
-              onBlur={commitPickedColor}
+              onBlur={() => void commitPickedColor()}
               onChange={(event) => {
                 beginColorEdit();
                 setPickedColor(event.currentTarget.value);
@@ -839,7 +844,7 @@ function TypographySection({
             <input
               aria-label="Text color hex"
               className="field-input"
-              onBlur={commitColor}
+              onBlur={() => void commitColor()}
               onChange={(event) => {
                 beginColorEdit();
                 setHexDraft(event.currentTarget.value);
@@ -847,7 +852,7 @@ function TypographySection({
               onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  commitColor();
+                  void commitColor();
                 }
               }}
               spellCheck={false}
@@ -865,7 +870,7 @@ function TypographySection({
               aria-pressed={style.align === align}
               className="seg-btn"
               key={align}
-              onClick={() => commit({ align })}
+              onClick={() => void commit({ align })}
               type="button"
             >
               {align === 'left' ? '‹' : align === 'center' ? '≡' : '›'}
@@ -882,7 +887,7 @@ function TypographySection({
               aria-pressed={style.textTransform === transform}
               className="seg-btn"
               key={transform}
-              onClick={() => commit({ textTransform: transform })}
+              onClick={() => void commit({ textTransform: transform })}
               type="button"
             >
               {transform === 'none' ? 'Aa' : 'AA'}
@@ -906,7 +911,7 @@ function ShapeStyleFields({
   onCommit,
 }: {
   element: ShapeElement;
-  onCommit: (style: ShapeStyle) => boolean;
+  onCommit: (style: ShapeStyle) => Promise<boolean>;
 }) {
   const { style } = element;
   const [fillSolid, setFillSolid] = useState(style.fill.kind === 'solid');
@@ -975,7 +980,7 @@ function ShapeStyleFields({
   function handleFieldKeyDown(event: ReactKeyboardEvent<HTMLInputElement>): void {
     if (event.key === 'Enter') {
       event.preventDefault();
-      commit();
+      void commit();
     } else if (event.key === 'Escape') {
       event.preventDefault();
       cancelEdit();
@@ -1046,12 +1051,12 @@ function ShapeStyleFields({
   }
 
   /** One commit path: a complete replacement style, guarded by the session baseline. */
-  function commitStyle(next: ShapeStyle): boolean {
+  async function commitStyle(next: ShapeStyle): Promise<boolean> {
     if (shapeStyleMatches(style, next)) {
       setEdited(false);
       return true;
     }
-    const ok = onCommit(next);
+    const ok = await onCommit(next);
     if (ok) {
       setEdited(false);
       setBaseStyle(next);
@@ -1060,18 +1065,18 @@ function ShapeStyleFields({
   }
 
   /** Blur/Enter commit; an invalid draft never dispatches and the session reverts. */
-  function commit(): void {
+  async function commit(): Promise<void> {
     const fill = fillFromDrafts();
     const stroke = strokeFromDrafts();
     if (!fill || !stroke) {
       setEdited(false);
       return;
     }
-    commitStyle({ fill, geometry: geometryFromDrafts(), stroke });
+    await commitStyle({ fill, geometry: geometryFromDrafts(), stroke });
   }
 
   /** Switch geometry preserving the complete style; the rectangle radius is remembered per session. */
-  function commitGeometry(kind: ShapeGeometry['kind']): void {
+  async function commitGeometry(kind: ShapeGeometry['kind']): Promise<void> {
     if (kind === style.geometry.kind) {
       return;
     }
@@ -1087,7 +1092,7 @@ function ShapeStyleFields({
       rememberedRadius.current = draftRadius();
     }
     const next = switchGeometryTo({ ...style, fill, stroke }, kind, rememberedRadius.current);
-    commitStyle(next);
+    await commitStyle(next);
   }
 
   /**
@@ -1106,7 +1111,7 @@ function ShapeStyleFields({
     return seeded;
   }
 
-  function commitFillKind(solid: boolean): void {
+  async function commitFillKind(solid: boolean): Promise<void> {
     if (solid === fillSolid) {
       return;
     }
@@ -1117,7 +1122,7 @@ function ShapeStyleFields({
       return;
     }
     if (!solid) {
-      commitStyle({ fill: { kind: 'none' }, geometry: geometryFromDrafts(), stroke });
+      await commitStyle({ fill: { kind: 'none' }, geometry: geometryFromDrafts(), stroke });
       return;
     }
     // Revealing a paint whose fields were hidden needs a valid seed color,
@@ -1133,10 +1138,10 @@ function ShapeStyleFields({
       setEdited(false);
       return;
     }
-    commitStyle({ fill, geometry: geometryFromDrafts(), stroke });
+    await commitStyle({ fill, geometry: geometryFromDrafts(), stroke });
   }
 
-  function commitStrokeKind(solid: boolean): void {
+  async function commitStrokeKind(solid: boolean): Promise<void> {
     if (solid === strokeSolid) {
       return;
     }
@@ -1147,7 +1152,7 @@ function ShapeStyleFields({
       return;
     }
     if (!solid) {
-      commitStyle({ fill, geometry: geometryFromDrafts(), stroke: { kind: 'none' } });
+      await commitStyle({ fill, geometry: geometryFromDrafts(), stroke: { kind: 'none' } });
       return;
     }
     const color = seedSolidColor(
@@ -1161,10 +1166,10 @@ function ShapeStyleFields({
       setEdited(false);
       return;
     }
-    commitStyle({ fill, geometry: geometryFromDrafts(), stroke });
+    await commitStyle({ fill, geometry: geometryFromDrafts(), stroke });
   }
 
-  function commitDash(dash: StrokeDash): void {
+  async function commitDash(dash: StrokeDash): Promise<void> {
     beginEdit();
     // The dash control only exists for a solid stroke; a draft that cannot
     // name a solid stroke (invalid values, or a none toggle) cancels the
@@ -1179,7 +1184,7 @@ function ShapeStyleFields({
       setEdited(false);
       return;
     }
-    commitStyle({ fill, geometry: geometryFromDrafts(), stroke: { ...stroke, dash } });
+    await commitStyle({ fill, geometry: geometryFromDrafts(), stroke: { ...stroke, dash } });
   }
 
   function useLatest(): void {
@@ -1205,7 +1210,7 @@ function ShapeStyleFields({
               aria-pressed={style.geometry.kind === kind}
               className="seg-btn"
               key={kind}
-              onClick={() => commitGeometry(kind)}
+              onClick={() => void commitGeometry(kind)}
               type="button"
             >
               {label}
@@ -1220,7 +1225,7 @@ function ShapeStyleFields({
           <button
             aria-pressed={!fillSolid}
             className="seg-btn"
-            onClick={() => commitFillKind(false)}
+            onClick={() => void commitFillKind(false)}
             type="button"
           >
             None
@@ -1228,7 +1233,7 @@ function ShapeStyleFields({
           <button
             aria-pressed={fillSolid}
             className="seg-btn"
-            onClick={() => commitFillKind(true)}
+            onClick={() => void commitFillKind(true)}
             type="button"
           >
             Solid
@@ -1239,7 +1244,7 @@ function ShapeStyleFields({
             <input
               aria-label="Pick a fill color"
               className="color-well"
-              onBlur={commit}
+              onBlur={() => void commit()}
               onChange={(event) => {
                 beginEdit();
                 setPickedFill(event.currentTarget.value);
@@ -1250,7 +1255,7 @@ function ShapeStyleFields({
             <input
               aria-label="Fill hex"
               className="field-input"
-              onBlur={commit}
+              onBlur={() => void commit()}
               onChange={(event) => {
                 beginEdit();
                 setFillHex(event.currentTarget.value);
@@ -1264,7 +1269,7 @@ function ShapeStyleFields({
               className="field-input field-input-small"
               max={100}
               min={1}
-              onBlur={commit}
+              onBlur={() => void commit()}
               onChange={(event) => {
                 beginEdit();
                 setFillOpacity(event.currentTarget.value);
@@ -1285,7 +1290,7 @@ function ShapeStyleFields({
           <button
             aria-pressed={!strokeSolid}
             className="seg-btn"
-            onClick={() => commitStrokeKind(false)}
+            onClick={() => void commitStrokeKind(false)}
             type="button"
           >
             None
@@ -1293,7 +1298,7 @@ function ShapeStyleFields({
           <button
             aria-pressed={strokeSolid}
             className="seg-btn"
-            onClick={() => commitStrokeKind(true)}
+            onClick={() => void commitStrokeKind(true)}
             type="button"
           >
             Solid
@@ -1305,7 +1310,7 @@ function ShapeStyleFields({
               <input
                 aria-label="Pick an outline color"
                 className="color-well"
-                onBlur={commit}
+                onBlur={() => void commit()}
                 onChange={(event) => {
                   beginEdit();
                   setPickedStroke(event.currentTarget.value);
@@ -1316,7 +1321,7 @@ function ShapeStyleFields({
               <input
                 aria-label="Outline hex"
                 className="field-input"
-                onBlur={commit}
+                onBlur={() => void commit()}
                 onChange={(event) => {
                   beginEdit();
                   setStrokeHex(event.currentTarget.value);
@@ -1330,7 +1335,7 @@ function ShapeStyleFields({
                 className="field-input field-input-small"
                 max={100}
                 min={1}
-                onBlur={commit}
+                onBlur={() => void commit()}
                 onChange={(event) => {
                   beginEdit();
                   setStrokeOpacity(event.currentTarget.value);
@@ -1349,7 +1354,7 @@ function ShapeStyleFields({
                   aria-label="Outline width"
                   className="field-input"
                   min={0.25}
-                  onBlur={commit}
+                  onBlur={() => void commit()}
                   onChange={(event) => {
                     beginEdit();
                     setStrokeWidth(event.currentTarget.value);
@@ -1369,7 +1374,7 @@ function ShapeStyleFields({
                   aria-pressed={strokeDash === dash}
                   className="seg-btn"
                   key={dash}
-                  onClick={() => commitDash(dash)}
+                  onClick={() => void commitDash(dash)}
                   type="button"
                 >
                   {label}
@@ -1388,7 +1393,7 @@ function ShapeStyleFields({
             className="field-input"
             max={maxRadiusHint}
             min={0}
-            onBlur={commit}
+            onBlur={() => void commit()}
             onChange={(event) => {
               beginEdit();
               setRadius(event.currentTarget.value);
@@ -1438,7 +1443,7 @@ function FrameFields({
 }: {
   disabled: boolean;
   element: PresentationElement;
-  onCommit: (frame: Frame) => boolean;
+  onCommit: (frame: Frame) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<FrameDraft>(() => frameToDraft(element.frame));
   const [touched, setTouched] = useState<Set<keyof Frame>>(new Set());
@@ -1456,13 +1461,13 @@ function FrameFields({
     }
   }, [element.frame]);
 
-  function commitField(field: keyof Frame): void {
+  async function commitField(field: keyof Frame): Promise<void> {
     const parsed = Number.parseFloat(draft[field]);
     const [min, max] = frameFieldBounds(element.frame)[field];
     const value = Number.isFinite(parsed) ? Math.round(clamp(parsed, min, max)) : element.frame[field];
     const nextDraft = { ...draft, [field]: String(value) };
     setDraft(nextDraft);
-    if (onCommit({ ...element.frame, [field]: value })) {
+    if (await onCommit({ ...element.frame, [field]: value })) {
       // End only this field's session; other dirty drafts stay untouched.
       setTouched((current) => {
         const next = new Set(current);
@@ -1488,7 +1493,7 @@ function FrameFields({
               disabled={disabled}
               max={bounds[field][1]}
               min={bounds[field][0]}
-              onBlur={() => commitField(field)}
+              onBlur={() => void commitField(field)}
               onChange={(event) => {
                 // Capture the value synchronously: React nulls
                 // currentTarget after the handler, and the draft updater runs
@@ -1506,7 +1511,7 @@ function FrameFields({
               onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  commitField(field);
+                  void commitField(field);
                 }
               }}
               step={1}

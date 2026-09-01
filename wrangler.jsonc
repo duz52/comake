@@ -6,5 +6,18 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
+  },
+  "secrets": {
+    "required": ["DEMO_SESSION_SECRET"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PROJECT_ROOM", "class_name": "ProjectRoom" },
+      { "name": "PROJECT_REGISTRY", "class_name": "ProjectRegistry" }
+    ]
+  },
+  "exports": {
+    "ProjectRoom": { "type": "durable-object", "storage": "sqlite" },
+    "ProjectRegistry": { "type": "durable-object", "storage": "sqlite" }
   }
 }

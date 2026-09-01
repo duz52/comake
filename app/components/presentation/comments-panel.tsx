@@ -21,7 +21,7 @@ export function CommentsPanel({
   onResolveComment,
   snapshot,
 }: {
-  onAddComment: (body: string) => boolean;
+  onAddComment: (body: string) => Promise<boolean>;
   onOpenComment: (comment: Comment) => void;
   onResolveComment: (comment: Comment) => void;
   snapshot: PresentationSnapshot;
@@ -32,12 +32,12 @@ export function CommentsPanel({
   );
   const openComments = comments.filter((comment) => !comment.resolved);
 
-  function submit(): void {
+  async function submit(): Promise<void> {
     const body = draft.trim();
     if (!body) {
       return;
     }
-    if (onAddComment(body)) {
+    if (await onAddComment(body)) {
       setDraft('');
     }
   }
@@ -53,14 +53,14 @@ export function CommentsPanel({
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 event.preventDefault();
-                submit();
+                void submit();
               }
             }}
             placeholder="A note for your agent…"
             value={draft}
           />
           <div className="composer-foot">
-            <button disabled={draft.trim().length === 0} onClick={submit} type="button">
+            <button disabled={draft.trim().length === 0} onClick={() => void submit()} type="button">
               Add note
             </button>
           </div>

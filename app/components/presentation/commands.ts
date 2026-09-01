@@ -1,5 +1,4 @@
-import { humanActor } from '../../lib/presentation/actors';
-import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import { shapeStyleMatches } from '../../lib/presentation/document';
 import type { PresentationStore, PresentationSnapshot } from '../../lib/presentation/store';
 import type {
@@ -33,12 +32,12 @@ export interface CommandEnv {
 export type CommandResult = { ok: true } | { ok: false; notice: string };
 
 /** Neutral dispatch wrapper for attributed human writes. */
-export function dispatchHuman(
+export async function dispatchHuman(
   env: CommandEnv,
   label: string,
   operations: PresentationOperation[],
-): CommandResult {
-  const result = env.store.dispatch({ actor: humanActor, label, operations });
+): Promise<CommandResult> {
+  const result = await env.store.dispatch({ actorKind: 'human', label, operations });
   if (!result.ok) {
     return { ok: false, notice: 'The change could not be applied. Please review and try again.' };
   }
@@ -106,12 +105,12 @@ export function newShapeElement(point: { x: number; y: number }): ShapeElement {
  * no point is given) and select it. The kernel owns the element shape; this
  * command only names the attributed write.
  */
-export function addTextElement(
+export async function addTextElement(
   env: CommandEnv,
   point?: { x: number; y: number },
-): { ok: true; elementId: string } | { ok: false; notice: string } {
+): Promise<{ ok: true; elementId: string } | { ok: false; notice: string }> {
   const element = newTextElement(point ?? { x: SLIDE_WIDTH / 2, y: SLIDE_HEIGHT / 2 });
-  const result = dispatchHuman(env, `Added ${element.name}`, [
+  const result = await dispatchHuman(env, `Added ${element.name}`, [
     { type: 'create_element', slideId: env.slideId, element },
   ]);
   if (!result.ok) {
@@ -121,12 +120,12 @@ export function addTextElement(
 }
 
 /** Create a canonical shape element on a slide point (center when omitted) and select it. */
-export function addShapeElement(
+export async function addShapeElement(
   env: CommandEnv,
   point?: { x: number; y: number },
-): { ok: true; elementId: string } | { ok: false; notice: string } {
+): Promise<{ ok: true; elementId: string } | { ok: false; notice: string }> {
   const element = newShapeElement(point ?? { x: SLIDE_WIDTH / 2, y: SLIDE_HEIGHT / 2 });
-  const result = dispatchHuman(env, `Added ${element.name}`, [
+  const result = await dispatchHuman(env, `Added ${element.name}`, [
     { type: 'create_element', slideId: env.slideId, element },
   ]);
   if (!result.ok) {
@@ -136,9 +135,9 @@ export function addShapeElement(
 }
 
 /** Append a fresh blank slide and focus it. */
-export function addSlide(env: CommandEnv): { ok: true; slideId: string } | { ok: false; notice: string } {
+export async function addSlide(env: CommandEnv): Promise<{ ok: true; slideId: string } | { ok: false; notice: string }> {
   const slide = newBlankSlide(`Slide ${env.snapshot.presentation.slideOrder.length + 1}`);
-  const result = dispatchHuman(env, 'Added a slide', [{ type: 'create_slide', slide }]);
+  const result = await dispatchHuman(env, 'Added a slide', [{ type: 'create_slide', slide }]);
   if (!result.ok) {
     return result;
   }
@@ -146,13 +145,13 @@ export function addSlide(env: CommandEnv): { ok: true; slideId: string } | { ok:
 }
 
 /** Insert a fresh blank slide directly after the given slide and focus it. */
-export function addSlideAfter(
+export async function addSlideAfter(
   env: CommandEnv,
   afterSlideId: string,
-): { ok: true; slideId: string } | { ok: false; notice: string } {
+): Promise<{ ok: true; slideId: string } | { ok: false; notice: string }> {
   const slide = newBlankSlide(`Slide ${env.snapshot.presentation.slideOrder.length + 1}`);
   const insertAt = env.snapshot.presentation.slideOrder.indexOf(afterSlideId) + 1;
-  const result = dispatchHuman(env, 'Added a slide', [
+  const result = await dispatchHuman(env, 'Added a slide', [
     { type: 'create_slide', slide, insertAt },
   ]);
   if (!result.ok) {
@@ -162,10 +161,10 @@ export function addSlideAfter(
 }
 
 /** Copy a slide with fresh ids, inserted directly after it. */
-export function duplicateSlide(
+export async function duplicateSlide(
   env: CommandEnv,
   slideId: string,
-): { ok: true; slideId: string } | { ok: false; notice: string } {
+): Promise<{ ok: true; slideId: string } | { ok: false; notice: string }> {
   const slide = env.snapshot.presentation.slides[slideId];
   const insertAt = env.snapshot.presentation.slideOrder.indexOf(slide.id) + 1;
 
@@ -185,7 +184,7 @@ export function duplicateSlide(
     elements,
   };
 
-  const result = dispatchHuman(env, `Duplicated ${slide.name}`, [
+  const result = await dispatchHuman(env, `Duplicated ${slide.name}`, [
     { type: 'create_slide', slide: copy, insertAt },
   ]);
   if (!result.ok) {
@@ -198,7 +197,7 @@ export function duplicateSlide(
  * Delete a slide plus its comments in one atomic batch. The kernel rejects
  * the final slide; focus re-derivation stays with the store.
  */
-export function deleteSlide(env: CommandEnv, slideId: string): CommandResult {
+export async function deleteSlide(env: CommandEnv, slideId: string): Promise<CommandResult> {
   const slide = env.snapshot.presentation.slides[slideId];
   const operations: PresentationOperation[] = Object.values(env.snapshot.comments)
     .filter((comment) => comment.slideId === slide.id)
@@ -208,7 +207,7 @@ export function deleteSlide(env: CommandEnv, slideId: string): CommandResult {
 }
 
 /** Delete several elements plus their attached comments in one atomic batch. */
-export function deleteElements(env: CommandEnv, elementIds: readonly string[]): CommandResult {
+export async function deleteElements(env: CommandEnv, elementIds: readonly string[]): Promise<CommandResult> {
   const slide = env.snapshot.presentation.slides[env.slideId];
   const operations: PresentationOperation[] = [];
   for (const elementId of elementIds) {
@@ -255,10 +254,10 @@ function duplicateFrame(frame: Frame): Frame {
  * before the next one is applied; computing every index from the original
  * order would place later copies before their originals.
  */
-export function duplicateElements(
+export async function duplicateElements(
   env: CommandEnv,
   elementIds: readonly string[],
-): { ok: true; newIds: string[] } | { ok: false; notice: string } {
+): Promise<{ ok: true; newIds: string[] } | { ok: false; notice: string }> {
   const slide = env.snapshot.presentation.slides[env.slideId];
   const originals = elementIds
     .map((elementId) => slide.elements[elementId])
@@ -293,7 +292,7 @@ export function duplicateElements(
     copiesById.set(element.id, copy.id);
   }
 
-  const result = dispatchHuman(
+  const result = await dispatchHuman(
     env,
     originals.length === 1
       ? `Duplicated ${originals[0].name}`
@@ -379,7 +378,7 @@ function alignedFrame(frame: Frame, box: SelectionBox, alignment: Alignment): Fr
  * aligning to it never pushes an element off-slide. No revision change
  * results when nothing would move.
  */
-export function alignElements(env: CommandEnv, elementIds: readonly string[], alignment: Alignment): CommandResult {
+export async function alignElements(env: CommandEnv, elementIds: readonly string[], alignment: Alignment): Promise<CommandResult> {
   const slide = env.snapshot.presentation.slides[env.slideId];
   const selected = elementIds
     .map((elementId) => slide.elements[elementId])
@@ -418,11 +417,11 @@ export function alignElements(env: CommandEnv, elementIds: readonly string[], al
  * the optimistic guard it was read from, so the whole batch is rejected when
  * any target moved elsewhere.
  */
-export function updateFrameElements(
+export async function updateFrameElements(
   env: CommandEnv,
   label: string,
   targets: ReadonlyArray<{ elementId: string; expected: Frame; next: Frame }>,
-): CommandResult {
+): Promise<CommandResult> {
   const operations: PresentationOperation[] = [];
   for (const target of targets) {
     if (framesEqual(target.next, target.expected)) {
@@ -443,11 +442,11 @@ export function updateFrameElements(
 }
 
 /** Replace one text element's full content with an optimistic guard. */
-export function updateText(env: CommandEnv, element: TextElement, text: string): CommandResult {
+export async function updateText(env: CommandEnv, element: TextElement, text: string): Promise<CommandResult> {
   if (text === element.text) {
     return { ok: true };
   }
-  const result = dispatchHuman(env, `Edited ${element.name}`, [
+  const result = await dispatchHuman(env, `Edited ${element.name}`, [
     {
       type: 'update_text',
       slideId: env.slideId,
@@ -481,11 +480,11 @@ function sameTextStyle(left: TextStyle, right: TextStyle): boolean {
  * style read at call time. The style is the exact canonical replacement:
  * every field the kernel stores is overwritten by the new value.
  */
-export function updateTextStyle(env: CommandEnv, element: TextElement, style: TextStyle): CommandResult {
+export async function updateTextStyle(env: CommandEnv, element: TextElement, style: TextStyle): Promise<CommandResult> {
   if (sameTextStyle(element.style, style)) {
     return { ok: true };
   }
-  const result = dispatchHuman(env, `Restyled ${element.name}`, [
+  const result = await dispatchHuman(env, `Restyled ${element.name}`, [
     {
       type: 'update_text_style',
       slideId: env.slideId,
@@ -506,11 +505,11 @@ export function updateTextStyle(env: CommandEnv, element: TextElement, style: Te
  * geometry, fill, and stroke are overwritten as one value. Equality is the
  * kernel's own; no second comparison is implemented here.
  */
-export function updateShapeStyle(env: CommandEnv, element: ShapeElement, style: ShapeStyle): CommandResult {
+export async function updateShapeStyle(env: CommandEnv, element: ShapeElement, style: ShapeStyle): Promise<CommandResult> {
   if (shapeStyleMatches(element.style, style)) {
     return { ok: true };
   }
-  const result = dispatchHuman(env, `Restyled ${element.name}`, [
+  const result = await dispatchHuman(env, `Restyled ${element.name}`, [
     {
       type: 'update_shape_style',
       slideId: env.slideId,
@@ -543,11 +542,11 @@ const ORDER_LABELS: Record<ElementOrderDirection, string> = {
  * order is an exact permutation of the slide's order, guarded by the order
  * read at call time.
  */
-export function reorderElements(
+export async function reorderElements(
   env: CommandEnv,
   elementIds: readonly string[],
   direction: ElementOrderDirection,
-): CommandResult {
+): Promise<CommandResult> {
   const slide = env.snapshot.presentation.slides[env.slideId];
   const order = slide.elementOrder;
   const isLocked = (elementId: string): boolean => slide.elements[elementId]?.locked === true;
@@ -685,7 +684,7 @@ export interface SlidePropertiesPatch {
  * notes value (explicitly preserved when untouched), and expected guards for
  * every field, so the kernel rejects a stale write instead of clobbering.
  */
-export function updateSlideProperties(env: CommandEnv, slide: Slide, patch: SlidePropertiesPatch): CommandResult {
+export async function updateSlideProperties(env: CommandEnv, slide: Slide, patch: SlidePropertiesPatch): Promise<CommandResult> {
   const name = patch.name ?? slide.name;
   const background = patch.background ?? slide.background;
   const notes = patch.notes !== undefined ? (patch.notes ?? undefined) : slide.notes;
@@ -693,7 +692,7 @@ export function updateSlideProperties(env: CommandEnv, slide: Slide, patch: Slid
   if (name === slide.name && background === slide.background && notes === slide.notes) {
     return { ok: true };
   }
-  const result = dispatchHuman(env, `Updated ${slideDisplayName(slide)}`, [
+  const result = await dispatchHuman(env, `Updated ${slideDisplayName(slide)}`, [
     {
       type: 'update_slide',
       slideId: slide.id,

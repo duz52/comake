@@ -5,10 +5,18 @@
  * side-effect code. Behavior lives in `app/lib/presentation/`.
  */
 
-export type Actor =
-  | { id: 'jerry'; kind: 'human'; name: 'Jerry' }
-  | { id: 'gpt'; kind: 'agent'; name: 'GPT' }
-  | { id: 'system'; kind: 'system'; name: 'Comake' };
+/** Who performed a persisted change: a principal identity plus an interaction kind. */
+export type ActorKind = 'human' | 'agent' | 'system';
+
+/**
+ * Canonical actor stored on comments and changesets. Identity and display
+ * name are server-derived; `system` is reserved for server-owned actions.
+ */
+export interface Actor {
+  id: string;
+  kind: ActorKind;
+  name: string;
+}
 
 /** Strict `#RRGGBB` hex color; the only color form the canonical model accepts. */
 export type HexColor = string;

@@ -7,9 +7,10 @@ import {
   type ParseResult,
 } from './operations';
 import { downloadPptx } from './pptx-download';
-import { agentActor } from './actors';
+import { DEMO_DISPLAY_NAME } from './actors';
 import { slideTitleText, type DispatchFailure } from './document';
-import { PresentationStore, type PresentationSnapshot } from './store';
+import { PresentationStore, type PresentationSnapshot, type TransportFailure } from './store';
+import { startWebMcpRegistration, type ModelContext, type RegisteredTool } from './webmcp-registration';
 import type { ChangeSet, Frame, Presentation, Slide } from '../../types/presentation';
 
 /**
@@ -25,25 +26,8 @@ type ToolFailureCode =
   | 'LOCKED_ELEMENT'
   | 'NOT_FOUND'
   | 'STALE_REVISION'
+  | 'TRANSPORT_ERROR'
   | 'UNSUPPORTED';
-
-interface RegisteredTool {
-  description: string;
-  execute: (input: unknown) => unknown | Promise<unknown>;
-  inputSchema: Record<string, unknown>;
-  name: string;
-  /**
-   * WebMCP imperative API metadata. `annotations.readOnlyHint: true` declares
-   * that invocation never mutates the canonical document.
-   */
-  annotations?: {
-    readOnlyHint?: boolean;
-  };
-}
-
-interface ModelContext {
-  registerTool: (tool: RegisteredTool, options?: { signal?: AbortSignal }) => Promise<unknown>;
-}
 
 declare global {
   interface Document {
@@ -64,12 +48,18 @@ function invalidInput(detail: string): ToolResult {
   return toolFailure('INVALID_INPUT', detail);
 }
 
-function dispatchFailureResult(failure: DispatchFailure): ToolResult {
+function dispatchFailureResult(failure: DispatchFailure | TransportFailure): ToolResult {
   if (failure.code === 'STALE_REVISION') {
     return toolFailure(
       'STALE_REVISION',
       'The presentation revision no longer matches baseRevision. Re-read the presentation and retry.',
       { currentRevision: failure.currentRevision },
+    );
+  }
+  if (failure.code === 'TRANSPORT_ERROR') {
+    return toolFailure(
+      'TRANSPORT_ERROR',
+      'The presentation server could not be reached. Re-read the presentation and retry.',
     );
   }
   return toolFailure(failure.code, failure.detail);
@@ -279,12 +269,11 @@ export function useWebMcp(store: PresentationStore): boolean {
 
   useEffect(() => {
     const modelContext = document.modelContext;
-    setIsAvailable(Boolean(modelContext));
     if (!modelContext) {
+      setIsAvailable(false);
       return undefined;
     }
 
-    const controller = new AbortController();
     const tools: RegisteredTool[] = [
       {
         name: 'get_presentation_context',
@@ -467,13 +456,13 @@ export function useWebMcp(store: PresentationStore): boolean {
         description:
           'Apply one atomic, attributed set of presentation operations: update_text, update_text_style (complete replacement text style), update_frame, update_shape_style (complete replacement shape style: geometry, fill, and stroke), update_element_order (an exact permutation of one slide\'s element ids), update_slide (complete replacement slide name/background/notes), create_slide, delete_slide, create_element, delete_element, add_comment, remove_comment, or resolve_comment. Every write must supply baseRevision, the revision you last read; if the presentation has advanced past it or any operation is invalid, the whole set is rejected and nothing is partially applied. Reference slides, elements, and comments by their stable ids exactly as the read tools returned them. To add a slide, use create_slide with the complete slide shape and an optional zero-based insertAt in the current slide order (0 inserts before the first slide; omission appends at the end), then create its elements with create_element operations in the same set, targeting the new slide\'s stable id — a new slide and its elements are created atomically. To add an element, use create_element with the complete element shape and an optional zero-based insertAt in the slide\'s element order (0 inserts behind everything; omission appends at the top). To delete a slide, use delete_slide by its stable id; the final slide can never be deleted; if the slide has comments, issue their remove_comment operations before delete_slide in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. To delete an element, use delete_element by its stable slide and element ids; if the element has comments attached to it, issue their remove_comment operations before delete_element in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. Element frames must fit inside the canonical presentation bounds, and colors must be strict #RRGGBB hex values. Echo element and comment shapes exactly as read_presentation_slide returned them.',
         inputSchema: presentationWriteInputSchema,
-        execute: (input) => {
+        execute: async (input) => {
           const parsed = parseWriteInput(input);
           if (!parsed.ok) {
             return invalidInput(parsed.detail);
           }
-          const result = store.dispatch({
-            actor: agentActor,
+          const result = await store.dispatch({
+            actorKind: 'agent',
             baseRevision: parsed.value.baseRevision,
             label: parsed.value.label,
             operations: parsed.value.operations,
@@ -498,7 +487,7 @@ export function useWebMcp(store: PresentationStore): boolean {
           required: ['slideId', 'body'],
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: async (input) => {
           const parsed = parseToolInput(input, ['body', 'elementId', 'slideId']);
           if (!parsed.ok) {
             return invalidInput(parsed.detail);
@@ -521,15 +510,15 @@ export function useWebMcp(store: PresentationStore): boolean {
 
           const comment = {
             id: crypto.randomUUID(),
-            actor: agentActor,
+            actor: { id: 'client', kind: 'agent' as const, name: DEMO_DISPLAY_NAME },
             body: body.value,
             createdAt: new Date().toISOString(),
             elementId: elementId.value,
             resolved: false,
             slideId: slideId.value,
           };
-          const result = store.dispatch({
-            actor: agentActor,
+          const result = await store.dispatch({
+            actorKind: 'agent',
             label: 'Left a comment',
             operations: [{ type: 'add_comment', comment }],
           });
@@ -556,7 +545,7 @@ export function useWebMcp(store: PresentationStore): boolean {
           required: ['commentId'],
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: async (input) => {
           const parsed = parseToolInput(input, ['commentId']);
           if (!parsed.ok) {
             return invalidInput(parsed.detail);
@@ -565,8 +554,8 @@ export function useWebMcp(store: PresentationStore): boolean {
           if (!commentId.ok) {
             return invalidInput(commentId.detail);
           }
-          const result = store.dispatch({
-            actor: agentActor,
+          const result = await store.dispatch({
+            actorKind: 'agent',
             label: 'Resolved a comment',
             operations: [
               {
@@ -629,14 +618,13 @@ export function useWebMcp(store: PresentationStore): boolean {
       },
     ];
 
-    void Promise.all(
-      tools.map((tool) => modelContext.registerTool(tool, { signal: controller.signal })),
-    ).catch((error) => {
-      console.error('[webmcp] tool registration failed:', error);
-      setIsAvailable(false);
+    return startWebMcpRegistration(modelContext, tools, {
+      onReady: () => setIsAvailable(true),
+      onFailed: (error) => {
+        console.error('[webmcp] tool registration failed:', error);
+        setIsAvailable(false);
+      },
     });
-
-    return () => controller.abort();
   }, [store]);
 
   return isAvailable;

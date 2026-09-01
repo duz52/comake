@@ -25,10 +25,10 @@ export function ActivityPanel({
   return (
     <section className="drawer-section">
       <span className="dsection-label">
-        Change sets · {changeSets.length} in memory
+        Change sets · {changeSets.length} recent
       </span>
       {changeSets.length === 0 ? (
-        <p className="drawer-empty">No changes yet in this session.</p>
+        <p className="drawer-empty">No changes yet.</p>
       ) : (
         changeSets.map((changeSet) => (
           <div className={`set-row${changeSet.revertedAt ? ' is-reverted' : ''}`} key={changeSet.id}>
