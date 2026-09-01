@@ -602,7 +602,10 @@ export function CanvasStage({
       event.preventBaseUIHandler?.();
       return;
     }
-    const target = event.target instanceof HTMLElement ? event.target.closest('[data-element-id]') : null;
+    // The target can be any visual descendant: shapes render their fill
+    // through nested SVG nodes, so the guard must accept every Element,
+    // not just HTMLElement.
+    const target = event.target instanceof Element ? event.target.closest('[data-element-id]') : null;
     const elementId = target?.getAttribute('data-element-id') ?? null;
     if (elementId && snapshot.presentation.slides[slideId].elements[elementId]) {
       // Right-clicking an unselected element selects it first; a selected or

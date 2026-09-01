@@ -289,7 +289,7 @@ function OverflowMenu({
         <CommandIcon icon="ellipsis" />
       </Menu.Trigger>
       <Menu.Portal>
-        <Menu.Positioner align="end" sideOffset={4}>
+        <Menu.Positioner className="popup-positioner" align="end" sideOffset={4}>
           <Menu.Popup className="bar-menu">
             {commands.map((command) => (
               <Menu.Item

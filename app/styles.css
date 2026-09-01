@@ -726,31 +726,33 @@ select:focus-visible,
 
 /*
  * Selection, hover, and focus signals stay visible against any element fill
- * or slide background (light, dark, yellow, or accent-matching). Every ring
- * is a layered pair: a white gap plus a black outer edge, so neither a light
- * nor a dark backdrop can swallow the accent line that marks selection.
- * No transitions or animations: states change instantly.
+ * or slide background (light, dark, accent-colored, or matching-color). Every
+ * ring is a two-tone pair — one thin accent line over a single dark hairline
+ * — so a backdrop matching the accent can never swallow the boundary, without
+ * the heavy multi-ring look. No transitions or animations: states change
+ * instantly.
  */
 
 .slide-element.is-selected::after {
   position: absolute;
   inset: -5px;
-  border: 1.5px solid var(--highlight);
-  border-radius: 3px;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 0 4px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--highlight);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
   content: '';
   pointer-events: none;
 }
 
 /* Secondary members of a multi-selection share the accent but stay quieter than the primary. */
 .slide-element.is-selected:not(.is-primary)::after {
-  border-width: 1px;
   border-style: dashed;
+  box-shadow: none;
 }
 
 .slide-element.is-locked.is-selected::after {
   border-style: dotted;
   border-color: color-mix(in srgb, var(--highlight) 55%, transparent);
+  box-shadow: none;
 }
 
 /* Hover preview only for interactive, unlocked, unselected elements. */
@@ -758,16 +760,21 @@ select:focus-visible,
   position: absolute;
   inset: -3px;
   border: 1px solid var(--accent-line);
-  border-radius: 2px;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6), 0 0 0 4px rgba(0, 0, 0, 0.28);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
   content: '';
   pointer-events: none;
 }
 
+/* Keyboard focus keeps the selection ring as the indicator and thickens it;
+ * a second outline would double the line. The global focus-visible outline
+ * for [tabindex] is suppressed for exactly this element. */
 .slide-element:focus-visible {
-  outline: 2px solid var(--highlight);
-  outline-offset: 3px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 0 4px rgba(255, 255, 255, 0.85);
+  outline: none;
+}
+
+.slide-element:focus-visible::after {
+  border-width: 2px;
 }
 
 /* The inline text editor owns the surface and takes the text cursor. */
@@ -793,7 +800,12 @@ select:focus-visible,
   -webkit-user-select: text;
 }
 
-/* Eight handles: a 20px hit target with a 10px visible square inside. */
+/*
+ * Eight handles: a 20x20 pointer/keyboard hit target centered on the
+ * selection ring (the ring line sits ~6px outside the element), with a small
+ * circular mark inside. The white fill with a dark keyline reads on any
+ * backdrop; hover and keyboard focus fill the mark with the accent.
+ */
 .resize-handle {
   position: absolute;
   z-index: 4;
@@ -807,11 +819,10 @@ select:focus-visible,
 
 .resize-handle::before {
   position: absolute;
-  inset: 5px;
-  border: 1.5px solid rgba(0, 0, 0, 0.85);
-  border-radius: 2px;
+  inset: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.95);
   content: '';
 }
 
@@ -820,54 +831,63 @@ select:focus-visible,
   background: var(--highlight);
 }
 
+.resize-handle:focus-visible {
+  outline: none;
+}
+
+.resize-handle:focus-visible::before {
+  border-color: rgba(0, 0, 0, 0.7);
+  box-shadow: 0 0 0 3px var(--highlight-soft);
+}
+
 .resize-handle-nw {
-  top: -10px;
-  left: -10px;
+  top: -16px;
+  left: -16px;
   cursor: nwse-resize;
 }
 
 .resize-handle-n {
-  top: -10px;
+  top: -16px;
   left: 50%;
   transform: translateX(-50%);
   cursor: ns-resize;
 }
 
 .resize-handle-ne {
-  top: -10px;
-  right: -10px;
+  top: -16px;
+  right: -16px;
   cursor: nesw-resize;
 }
 
 .resize-handle-e {
   top: 50%;
-  right: -10px;
+  right: -16px;
   transform: translateY(-50%);
   cursor: ew-resize;
 }
 
 .resize-handle-se {
-  right: -10px;
-  bottom: -10px;
+  right: -16px;
+  bottom: -16px;
   cursor: nwse-resize;
 }
 
 .resize-handle-s {
-  bottom: -10px;
+  bottom: -16px;
   left: 50%;
   transform: translateX(-50%);
   cursor: ns-resize;
 }
 
 .resize-handle-sw {
-  left: -10px;
-  bottom: -10px;
+  left: -16px;
+  bottom: -16px;
   cursor: nesw-resize;
 }
 
 .resize-handle-w {
   top: 50%;
-  left: -10px;
+  left: -16px;
   transform: translateY(-50%);
   cursor: ew-resize;
 }
@@ -877,10 +897,10 @@ select:focus-visible,
   cursor: crosshair;
 }
 
-/* The command bar ⋯ overflow menu; the same chrome as the context menus. */
+/* The command bar ⋯ overflow menu; the same chrome as the context menus.
+ * Stacking is owned by its `.popup-positioner`. */
 .bar-menu {
   box-sizing: border-box;
-  z-index: 50;
   min-width: 200px;
   max-height: min(440px, 60vh);
   overflow-y: auto;
@@ -948,6 +968,20 @@ select:focus-visible,
 
 .bar-menu-item[data-highlighted] .bar-menu-key {
   color: var(--text-muted);
+}
+
+/* --- Popup stacking ------------------------------------------------------------ */
+
+/*
+ * One owning layer for every popup in the app. Base UI paints a popup
+ * through its fixed Positioner; the Popup inside is static, so a z-index on
+ * the popup class can never apply. Canvas chrome (resize handles at z-index
+ * 4), panels, toasts, and Present mode all live below this level, so menus
+ * and tooltips stack above the selection no matter which element is on top
+ * or how the canvas is transformed.
+ */
+.popup-positioner {
+  z-index: 70;
 }
 
 /* --- Canvas context menu ------------------------------------------------------------ */
@@ -2054,7 +2088,6 @@ select:focus-visible,
 }
 
 .theme-menu {
-  z-index: 60;
   min-width: 150px;
   padding: 4px;
   border: 1px solid var(--line-strong);

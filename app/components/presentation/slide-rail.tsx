@@ -114,7 +114,7 @@ function SlideThumbnail({
           <CommandIcon icon="ellipsis" />
         </Menu.Trigger>
         <Menu.Portal>
-          <Menu.Positioner align="end" side="bottom" sideOffset={2}>
+          <Menu.Positioner className="popup-positioner" align="end" side="bottom" sideOffset={2}>
             <Menu.Popup className="ctx-menu" finalFocus={() => false}>
               <SlideMenuItems commands={commands} ctx={menuCtx} platform={platform} />
             </Menu.Popup>
@@ -128,7 +128,7 @@ function SlideThumbnail({
     <ContextMenu.Root>
       <ContextMenu.Trigger render={thumbnail} />
       <ContextMenu.Portal>
-        <ContextMenu.Positioner alignOffset={-4} sideOffset={-4}>
+        <ContextMenu.Positioner className="popup-positioner" alignOffset={-4} sideOffset={-4}>
           <ContextMenu.Popup className="ctx-menu">
             <SlideMenuItems commands={commands} ctx={menuCtx} platform={platform} />
           </ContextMenu.Popup>

@@ -53,7 +53,7 @@ export function CanvasContextMenu({ ctx, finalFocus, onContextMenu, onOpenChange
     <ContextMenu.Root onOpenChange={onOpenChange}>
       <ContextMenu.Trigger onContextMenu={onContextMenu} render={render} />
       <ContextMenu.Portal>
-        <ContextMenu.Positioner alignOffset={-4} sideOffset={-4}>
+        <ContextMenu.Positioner className="popup-positioner" alignOffset={-4} sideOffset={-4}>
           <ContextMenu.Popup className="ctx-menu" finalFocus={finalFocus}>
             <MenuCommandItems commands={commands} ctx={ctx} platform={platform} />
           </ContextMenu.Popup>
@@ -93,7 +93,7 @@ function MenuCommandItems({
               </span>
             </ContextMenu.SubmenuTrigger>
             <ContextMenu.Portal>
-              <ContextMenu.Positioner alignOffset={-4} sideOffset={-4}>
+              <ContextMenu.Positioner className="popup-positioner" alignOffset={-4} sideOffset={-4}>
                 <ContextMenu.Popup className="ctx-menu">
                   <MenuCommandItems commands={submenu.commands} ctx={ctx} inSubmenu platform={platform} />
                 </ContextMenu.Popup>
