@@ -10,6 +10,9 @@ export type Actor =
   | { id: 'gpt'; kind: 'agent'; name: 'GPT' }
   | { id: 'system'; kind: 'system'; name: 'Comake' };
 
+/** Strict `#RRGGBB` hex color; the only color form the canonical model accepts. */
+export type HexColor = string;
+
 export interface Frame {
   x: number;
   y: number;
@@ -19,7 +22,7 @@ export interface Frame {
 
 export interface TextStyle {
   align?: 'left' | 'center' | 'right';
-  color: string;
+  color: HexColor;
   fontFamily: string;
   fontSize: number;
   fontWeight?: 400 | 500 | 600 | 700 | 800;
@@ -42,16 +45,61 @@ export interface TextElement extends ElementBase {
   text: string;
 }
 
+/**
+ * Intrinsic geometry parameters of a shape. The variant owns its parameters:
+ * only `rectangle` has a corner radius, so no shape can carry a meaningless one.
+ * `cornerRadius` is the authored radius in slide points (finite, ≥ 0); the
+ * effective rendered radius is `effectiveCornerRadius` (one kernel helper).
+ */
+export type ShapeGeometry =
+  | { kind: 'rectangle'; cornerRadius: number }
+  | { kind: 'diamond' }
+  | { kind: 'ellipse' }
+  | { kind: 'triangle' };
+
+/**
+ * Canonical fill paint. `none` is the explicit no-fill; a solid paint is a
+ * strict hex color at a fractional opacity in (0, 1] — a fully transparent
+ * fill is `none`, never `opacity: 0`.
+ */
+export type ShapeFill =
+  | { kind: 'none' }
+  | { kind: 'solid'; color: HexColor; opacity: number };
+
+/** Canonical dash pattern of a solid stroke. */
+export type StrokeDash = 'solid' | 'dash' | 'dot';
+
+/**
+ * Canonical stroke paint. `none` is the explicit no-outline; a solid stroke
+ * has a strict hex color, opacity in (0, 1], width in slide points (> 0), and
+ * a dash pattern. A zero-width stroke is `none`, never `width: 0`.
+ */
+export type ShapeStroke =
+  | { kind: 'none' }
+  | {
+      kind: 'solid';
+      color: HexColor;
+      dash: StrokeDash;
+      opacity: number;
+      width: number;
+    };
+
+/** The complete canonical appearance of a shape; replaced only as a whole. */
+export interface ShapeStyle {
+  fill: ShapeFill;
+  geometry: ShapeGeometry;
+  stroke: ShapeStroke;
+}
+
 export interface ShapeElement extends ElementBase {
-  fill: string;
   kind: 'shape';
-  radius?: number;
+  style: ShapeStyle;
 }
 
 export type PresentationElement = TextElement | ShapeElement;
 
 export interface Slide {
-  background: string;
+  background: HexColor;
   elementOrder: string[];
   elements: Record<string, PresentationElement>;
   id: string;
@@ -94,13 +142,57 @@ export type PresentationOperation =
     }
   | {
       elementId: string;
+      expectedStyle?: TextStyle;
+      slideId: string;
+      style: TextStyle;
+      type: 'update_text_style';
+    }
+  | {
+      elementId: string;
       expectedFrame?: Frame;
       frame: Frame;
       slideId: string;
       type: 'update_frame';
     }
   | {
+      elementId: string;
+      /** Optimistic guard: the complete shape style read before editing. */
+      expectedStyle?: ShapeStyle;
+      slideId: string;
+      /** The complete replacement shape style; every field is replaced atomically. */
+      style: ShapeStyle;
+      type: 'update_shape_style';
+    }
+  | {
+      elementOrder: string[];
+      expectedElementOrder?: string[];
+      slideId: string;
+      type: 'update_element_order';
+    }
+  | {
+      background: string;
+      expectedBackground?: string;
+      expectedName?: string;
+      expectedNotes?: string;
+      name: string;
+      notes?: string;
+      slideId: string;
+      type: 'update_slide';
+    }
+  | {
+      insertAt?: number;
+      slide: Slide;
+      type: 'create_slide';
+    }
+  | {
+      expectedSlide?: Slide;
+      slideId: string;
+      type: 'delete_slide';
+    }
+  | {
       element: PresentationElement;
+      /** Optional zero-based z-position in the slide's element order; omission appends at the top. */
+      insertAt?: number;
       slideId: string;
       type: 'create_element';
     }

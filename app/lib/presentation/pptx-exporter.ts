@@ -1,8 +1,12 @@
-import {
-  type Presentation,
-  type PresentationElement,
-  type ShapeElement,
-  type TextElement,
+import { effectiveCornerRadius } from './document';
+import type {
+  Presentation,
+  PresentationElement,
+  ShapeElement,
+  ShapeFill,
+  ShapeStroke,
+  TextElement,
+  TextStyle,
 } from '../../types/presentation';
 
 interface ZipFile {
@@ -166,10 +170,34 @@ function xfrm(element: PresentationElement): string {
   return `<a:xfrm${rotation}><a:off x="${emu(element.frame.x)}" y="${emu(element.frame.y)}"/><a:ext cx="${emu(element.frame.width)}" cy="${emu(element.frame.height)}"/></a:xfrm>`;
 }
 
+/**
+ * Character spacing: canonical slide points to the DrawingML `spc` attribute.
+ * Per ECMA-376 Part 1 (5th edition, December 2016), §21.1.2.3.9 `rPr` attribute
+ * `spc` (Spacing) is specified in hundredths of a point ("a font point size of
+ * 12 would be 1200"), typed as ST_TextPoint (§20.1.10.74), whose numeric branch
+ * ST_TextPointUnqualified (§20.1.10.75) restricts xsd:int to [-400000, 400000],
+ * i.e. -4000 pt to 4000 pt; omitting the attribute means 0. Canonical
+ * `letterSpacing` is in slide points, so it is multiplied by 100 and clamped to
+ * the ST_TextPoint range so every canonical value yields schema-valid XML.
+ */
+function characterSpacingXml(style: TextStyle): string {
+  if (style.letterSpacing === undefined) {
+    return '';
+  }
+  const centipoints = Math.round(style.letterSpacing * 100);
+  return ` spc="${Math.min(400000, Math.max(-400000, centipoints))}"`;
+}
+
 function textXml(element: TextElement, shapeId: number): string {
   const alignment = { left: 'l', center: 'ctr', right: 'r' }[element.style.align ?? 'left'];
-  const fontSize = Math.max(800, Math.round(element.style.fontSize * 75));
-  const fontWeight = (element.style.fontWeight ?? 400) >= 700 ? ' b="1"' : '';
+  // Canonical font sizes are points; OOXML `sz` is centipoints (1/100 pt).
+  const fontSize = Math.round(element.style.fontSize * 100);
+  // DrawingML `b` is a plain xsd:boolean (ECMA-376 CT_TextCharacterProperties)
+  // with no weight granularity. Every canonical weight above regular (500 medium
+  // through 800 extrabold) carries emphasized visual intent, so all of them map
+  // to b="1"; silently flattening 600 to regular would lose that intent. Only
+  // 400 stays regular.
+  const fontWeight = (element.style.fontWeight ?? 400) >= 500 ? ' b="1"' : '';
   const lineHeight = element.style.lineHeight
     ? ` spcPct="${Math.round(element.style.lineHeight * 100000)}"`
     : '';
@@ -177,7 +205,7 @@ function textXml(element: TextElement, shapeId: number): string {
   const paragraphs = text
     .split('\n')
     .map(
-      (line) => `<a:p><a:pPr algn="${alignment}"${lineHeight}/><a:r><a:rPr lang="en-US" sz="${fontSize}"${fontWeight}><a:solidFill><a:srgbClr val="${color(element.style.color)}"/></a:solidFill><a:latin typeface="${escapeXml(element.style.fontFamily.split(',')[0])}"/></a:rPr><a:t>${escapeXml(line)}</a:t></a:r><a:endParaRPr lang="en-US"/></a:p>`,
+      (line) => `<a:p><a:pPr algn="${alignment}"${lineHeight}/><a:r><a:rPr lang="en-US" sz="${fontSize}"${fontWeight}${characterSpacingXml(element.style)}><a:solidFill><a:srgbClr val="${color(element.style.color)}"/></a:solidFill><a:latin typeface="${escapeXml(element.style.fontFamily.split(',')[0])}"/></a:rPr><a:t>${escapeXml(line)}</a:t></a:r><a:endParaRPr lang="en-US"/></a:p>`,
     )
     .join('');
 
@@ -188,11 +216,63 @@ function textXml(element: TextElement, shapeId: number): string {
   </p:sp>`;
 }
 
+/**
+ * Geometry: the canonical geometry variant maps to its OOXML preset. A
+ * rectangle with a positive effective radius is a roundRect whose adjustment
+ * derives from `effectiveCornerRadius`; the plain-rect preset otherwise.
+ */
+function shapeGeometryXml(element: ShapeElement): string {
+  const { geometry } = element.style;
+  if (geometry.kind === 'rectangle') {
+    const radius = effectiveCornerRadius(element.frame, geometry);
+    if (radius === 0) {
+      return '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>';
+    }
+    // effectiveCornerRadius ≤ shorterSide/2, so adj ≤ 50000 by construction.
+    const adjustment = Math.round((radius / Math.min(element.frame.width, element.frame.height)) * 100000);
+    return `<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val ${adjustment}"/></a:avLst></a:prstGeom>`;
+  }
+  // 'ellipse', 'triangle', and 'diamond' are OOXML preset geometry names.
+  return `<a:prstGeom prst="${geometry.kind}"><a:avLst/></a:prstGeom>`;
+}
+
+/**
+ * A solid `srgbClr` with its alpha color transform nested as a child (the
+ * EG_ColorTransform sequence of CT_SRgbColor); opacity 1 omits the child
+ * so the node stays self-closing.
+ */
+function srgbClrXml(hex: string, opacity: number): string {
+  const value = color(hex);
+  const alpha = opacity === 1 ? '' : `<a:alpha val="${Math.round(opacity * 100000)}"/>`;
+  return alpha === '' ? `<a:srgbClr val="${value}"/>` : `<a:srgbClr val="${value}">${alpha}</a:srgbClr>`;
+}
+
+/** Fill: none → noFill; solid → solidFill over an srgbClr with its alpha child. */
+function shapeFillXml(fill: ShapeFill): string {
+  if (fill.kind === 'none') {
+    return '<a:noFill/>';
+  }
+  return `<a:solidFill>${srgbClrXml(fill.color, fill.opacity)}</a:solidFill>`;
+}
+
+/** Stroke: none → noFill line; solid → width (EMU), color, alpha, preset dash. */
+function shapeStrokeXml(stroke: ShapeStroke): string {
+  if (stroke.kind === 'none') {
+    return '<a:ln><a:noFill/></a:ln>';
+  }
+  const dash =
+    stroke.dash === 'dash'
+      ? '<a:prstDash val="dash"/>'
+      : stroke.dash === 'dot'
+        ? '<a:prstDash val="sysDot"/>'
+        : '';
+  return `<a:ln w="${emu(stroke.width)}" cap="flat"><a:solidFill>${srgbClrXml(stroke.color, stroke.opacity)}</a:solidFill>${dash}</a:ln>`;
+}
+
 function shapeXml(element: ShapeElement, shapeId: number): string {
-  const preset = element.radius ? 'roundRect' : 'rect';
   return `<p:sp>
     <p:nvSpPr><p:cNvPr id="${shapeId}" name="${escapeXml(element.name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
-    <p:spPr>${xfrm(element)}<a:prstGeom prst="${preset}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${color(element.fill)}"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr>
+    <p:spPr>${xfrm(element)}${shapeGeometryXml(element)}${shapeFillXml(element.style.fill)}${shapeStrokeXml(element.style.stroke)}</p:spPr>
   </p:sp>`;
 }
 

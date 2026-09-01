@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  isRecord,
   parseToolInput,
   parseWriteInput,
   presentationWriteInputSchema,
@@ -9,7 +10,7 @@ import { downloadPptx } from './pptx-download';
 import { agentActor } from './actors';
 import { slideTitleText, type DispatchFailure } from './document';
 import { PresentationStore, type PresentationSnapshot } from './store';
-import type { ChangeSet, Presentation, Slide } from '../../types/presentation';
+import type { ChangeSet, Frame, Presentation, Slide } from '../../types/presentation';
 
 /**
  * WebMCP adapter: registers the page's self-describing tool contract on
@@ -100,11 +101,18 @@ function describeChangeSet(changeSet: ChangeSet): ToolResult {
 }
 
 function parseToolString(input: Record<string, unknown>, key: string): ParseResult<string> {
-  const value = input[key];
+  return parseNonEmptyStringValue(input[key], key);
+}
+
+function parseNonEmptyStringValue(value: unknown, subject: string): ParseResult<string> {
   if (typeof value !== 'string' || value.length === 0) {
-    return { ok: false, detail: `${key} must be a non-empty string.` };
+    return { ok: false, detail: `${subject} must be a non-empty string.` };
   }
   return { ok: true, value };
+}
+
+function parseOptionalInput<T>(value: unknown, parse: (entry: unknown) => ParseResult<T>): ParseResult<T | undefined> {
+  return value === undefined ? { ok: true, value: undefined } : parse(value);
 }
 
 function noInputSchema(): Record<string, unknown> {
@@ -135,7 +143,11 @@ function describeSlide(slideId: string, index: number, slide: Slide): ToolResult
   };
 }
 
-/** Compact element record for the spatial map: geometry and content only, no text styling. */
+/**
+ * Compact element record for the spatial map: geometry and content only.
+ * Text styling and shape strokes are intentionally omitted as decoration
+ * detail; read_presentation_slide carries the complete canonical value.
+ */
 function spatialElementRecord(slide: Slide, elementId: string, zIndex: number): ToolResult {
   const element = slide.elements[elementId];
   const record: ToolResult = {
@@ -152,23 +164,101 @@ function spatialElementRecord(slide: Slide, elementId: string, zIndex: number): 
   if (element.kind === 'text') {
     record.text = element.text;
   } else {
-    record.fill = element.fill;
-    if (element.radius !== undefined) {
-      record.radius = element.radius;
-    }
+    record.geometry = element.style.geometry;
+    record.fill = element.style.fill;
   }
   return record;
 }
 
-/**
- * The focus target on the active slide: stable identity, canonical frame,
- * z order, and the full canonical element value (text/style or fill/radius).
- */
-function describeSelection(slide: Slide, selectedElementId: string | undefined): unknown {
-  if (selectedElementId === undefined) {
-    return null;
+/** Inclusive-edge rectangle intersection in slide coordinates. */
+function framesIntersect(left: Frame, right: Frame): boolean {
+  return (
+    left.x <= right.x + right.width &&
+    right.x <= left.x + left.width &&
+    left.y <= right.y + right.height &&
+    right.y <= left.y + left.height
+  );
+}
+
+function parseQueryCoordinate(value: unknown, subject: string): ParseResult<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return { ok: false, detail: `${subject} must be a finite number.` };
   }
-  const element = slide.elements[selectedElementId];
+  return { ok: true, value };
+}
+
+function parseQueryExtent(value: unknown, subject: string): ParseResult<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return { ok: false, detail: `${subject} must be a positive finite number.` };
+  }
+  return { ok: true, value };
+}
+
+/**
+ * Region parser for the spatial map's read-only query rectangle. Unlike the
+ * canonical element frame parser, a region is not placed on the canvas: matching
+ * is intersection-based, so it may start anywhere and extend beyond the slide —
+ * negative origins and bounds past the 960x540 canvas are valid. Only finite
+ * coordinates and a positive finite size are enforced, with repair-safe details.
+ */
+export function parseQueryRegion(value: unknown): ParseResult<Frame> {
+  if (!isRecord(value)) {
+    return { ok: false, detail: 'region must be an object.' };
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'x' && key !== 'y' && key !== 'width' && key !== 'height') {
+      return { ok: false, detail: `region has unknown property "${key}".` };
+    }
+  }
+  const x = parseQueryCoordinate(value.x, 'region.x');
+  if (!x.ok) return x;
+  const y = parseQueryCoordinate(value.y, 'region.y');
+  if (!y.ok) return y;
+  const width = parseQueryExtent(value.width, 'region.width');
+  if (!width.ok) return width;
+  const height = parseQueryExtent(value.height, 'region.height');
+  if (!height.ok) return height;
+  return { ok: true, value: { x: x.value, y: y.value, width: width.value, height: height.value } };
+}
+
+/**
+ * One slide's elements matching the optional region rectangle and/or the
+ * optional case-insensitive query (names and text content), in canonical z
+ * order. Single pass over the slide's elements; the region is an intersection
+ * query, so it may lie partly or wholly outside the slide.
+ */
+export function querySpatialElements(
+  slide: Slide,
+  region: Frame | undefined,
+  query: string | undefined,
+): ToolResult[] {
+  const normalizedQuery = query?.toLowerCase();
+  return slide.elementOrder
+    .map((elementId, zIndex) => ({ elementId, zIndex }))
+    .filter(({ elementId }) => {
+      const element = slide.elements[elementId];
+      if (region && !framesIntersect(element.frame, region)) {
+        return false;
+      }
+      if (
+        normalizedQuery &&
+        !element.name.toLowerCase().includes(normalizedQuery) &&
+        !(element.kind === 'text' && element.text.toLowerCase().includes(normalizedQuery))
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .map(({ elementId, zIndex }) => spatialElementRecord(slide, elementId, zIndex));
+}
+
+/**
+ * The full canonical description of one selected element: stable identity,
+ * canonical frame, z order, and the complete canonical element value
+ * (text/style or geometry, fill, and stroke).
+ */
+function describeSelectedElement(slide: Slide, elementId: string): unknown {
+  const element = slide.elements[elementId];
   const selection: ToolResult = {
     id: element.id,
     kind: element.kind,
@@ -199,7 +289,7 @@ export function useWebMcp(store: PresentationStore): boolean {
       {
         name: 'get_presentation_context',
         description:
-          'Start here. Read the current human focus and the canonical canvas: document revision, focus revision, presentation id and title, the canonical coordinateSpace, the active slide (stable id, one-based index, name, title), and the selected element (stable id, kind, name, full canonical frame, optional rotation, locked flag, zIndex, and its full canonical value: text and style, or fill and radius) when the human has one selected. Call get_presentation_spatial_map or read_presentation_slide from here only when you need a specific slide in more detail.',
+          'Start here. Read the current human focus and the canonical canvas: document revision, focus revision, presentation id and title, the canonical coordinateSpace, the active slide (stable id, one-based index, name, title), and the human selection (elementIds plus, for each selected element, kind, name, full canonical frame, optional rotation, locked flag, zIndex, and its full canonical value: text and style, or geometry, fill, and stroke; both arrays are empty when nothing is selected). Call get_presentation_spatial_map or read_presentation_slide from here only when you need a specific slide in more detail.',
         inputSchema: noInputSchema(),
         annotations: { readOnlyHint: true },
         execute: (input) => {
@@ -222,14 +312,19 @@ export function useWebMcp(store: PresentationStore): boolean {
               ...describeSlide(activeSlide.id, presentation.slideOrder.indexOf(activeSlide.id) + 1, activeSlide),
               title: slideTitleText(activeSlide),
             },
-            selection: describeSelection(activeSlide, session.selectedElementId),
+            selection: {
+              elementIds: session.selectedElementIds,
+              elements: session.selectedElementIds.map((elementId) =>
+                describeSelectedElement(activeSlide, elementId),
+              ),
+            },
           };
         },
       },
       {
         name: 'get_presentation_spatial_map',
         description:
-          'Read the compact structured canvas of one slide by its stable slide id: the canonical coordinateSpace, slide id/one-based index/name/background, and every element in canonical z order with its id, kind, name, frame, zIndex, locked flag, and content (text, or fill/radius) — text styling is intentionally omitted. Prefer this for geometry; use read_presentation_slide only when you need exact styles or comments.',
+          'Read the compact structured canvas of one slide by its stable slide id: the canonical coordinateSpace, slide id/one-based index/name/background, and every element in canonical z order with its id, kind, name, frame, zIndex, locked flag, and content (text, or geometry and fill) — text styling and shape strokes are intentionally omitted. Optionally narrow the result with a rectangular region (elements whose frame intersects it, edges inclusive) and/or a case-insensitive query matched against element names and text content; totalElementCount always reports the slide\'s full element count. Prefer this for geometry; use read_presentation_slide only when you need exact styles or comments.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -237,19 +332,46 @@ export function useWebMcp(store: PresentationStore): boolean {
               type: 'string',
               description: 'Stable Comake slide id from get_presentation_context or get_presentation_outline.',
             },
+            region: {
+              type: 'object',
+              properties: {
+                x: { type: 'number' },
+                y: { type: 'number' },
+                width: { type: 'number', exclusiveMinimum: 0 },
+                height: { type: 'number', exclusiveMinimum: 0 },
+              },
+              required: ['x', 'y', 'width', 'height'],
+              additionalProperties: false,
+              description:
+                'Optional rectangular query region in slide coordinates (origin top-left, x right, y down): only elements whose frame intersects it, edges inclusive, are returned. The region is a query, not a placed frame — it may extend beyond the slide, so negative origins and bounds past the 960x540 canvas are accepted.',
+            },
+            query: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'Optional case-insensitive substring matched against each element\'s name and text content.',
+            },
           },
           required: ['slideId'],
           additionalProperties: false,
         },
         annotations: { readOnlyHint: true },
         execute: (input) => {
-          const parsed = parseToolInput(input, ['slideId']);
+          const parsed = parseToolInput(input, ['query', 'region', 'slideId']);
           if (!parsed.ok) {
             return invalidInput(parsed.detail);
           }
           const slideId = parseToolString(parsed.value, 'slideId');
           if (!slideId.ok) {
             return invalidInput(slideId.detail);
+          }
+          const region = parseOptionalInput(parsed.value.region, parseQueryRegion);
+          if (!region.ok) {
+            return invalidInput(region.detail);
+          }
+          const query = parseOptionalInput(parsed.value.query, (entry) => parseNonEmptyStringValue(entry, 'query'));
+          if (!query.ok) {
+            return invalidInput(query.detail);
           }
           const snapshot = store.getSnapshot();
           const slide = snapshot.presentation.slides[slideId.value];
@@ -264,9 +386,8 @@ export function useWebMcp(store: PresentationStore): boolean {
               ...describeSlide(slide.id, snapshot.presentation.slideOrder.indexOf(slide.id) + 1, slide),
               background: slide.background,
             },
-            elements: slide.elementOrder.map((elementId, zIndex) =>
-              spatialElementRecord(slide, elementId, zIndex),
-            ),
+            totalElementCount: slide.elementOrder.length,
+            elements: querySpatialElements(slide, region.value, query.value),
           };
         },
       },
@@ -306,7 +427,7 @@ export function useWebMcp(store: PresentationStore): boolean {
       {
         name: 'read_presentation_slide',
         description:
-          'Read one slide by its stable slide id in full detail: background, every element with its complete canonical shape (id, kind, name, frame, text and style, or fill), and all comments on the slide. Use this when you need exact text styling or comments; for geometry-only reads prefer the lighter get_presentation_spatial_map. Read a slide before editing it, and re-read it after any rejection.',
+          'Read one slide by its stable slide id in full detail: background, every element with its complete canonical shape (id, kind, name, frame, text and style, or geometry, fill, and stroke), and all comments on the slide. Use this when you need exact text styling, shape styles, or comments; for geometry-only reads prefer the lighter get_presentation_spatial_map. Read a slide before editing it, and re-read it after any rejection.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -344,7 +465,7 @@ export function useWebMcp(store: PresentationStore): boolean {
       {
         name: 'apply_presentation_operations',
         description:
-          'Apply one atomic, attributed set of presentation operations: update_text, update_frame, create_element, delete_element, add_comment, remove_comment, or resolve_comment. The whole set is rejected when baseRevision does not match the current revision or when any operation is invalid; nothing is partially applied. Echo element and comment shapes exactly as read_presentation_slide returned them.',
+          'Apply one atomic, attributed set of presentation operations: update_text, update_text_style (complete replacement text style), update_frame, update_shape_style (complete replacement shape style: geometry, fill, and stroke), update_element_order (an exact permutation of one slide\'s element ids), update_slide (complete replacement slide name/background/notes), create_slide, delete_slide, create_element, delete_element, add_comment, remove_comment, or resolve_comment. Every write must supply baseRevision, the revision you last read; if the presentation has advanced past it or any operation is invalid, the whole set is rejected and nothing is partially applied. Reference slides, elements, and comments by their stable ids exactly as the read tools returned them. To add a slide, use create_slide with the complete slide shape and an optional zero-based insertAt in the current slide order (0 inserts before the first slide; omission appends at the end), then create its elements with create_element operations in the same set, targeting the new slide\'s stable id — a new slide and its elements are created atomically. To add an element, use create_element with the complete element shape and an optional zero-based insertAt in the slide\'s element order (0 inserts behind everything; omission appends at the top). To delete a slide, use delete_slide by its stable id; the final slide can never be deleted; if the slide has comments, issue their remove_comment operations before delete_slide in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. To delete an element, use delete_element by its stable slide and element ids; if the element has comments attached to it, issue their remove_comment operations before delete_element in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. Element frames must fit inside the canonical presentation bounds, and colors must be strict #RRGGBB hex values. Echo element and comment shapes exactly as read_presentation_slide returned them.',
         inputSchema: presentationWriteInputSchema,
         execute: (input) => {
           const parsed = parseWriteInput(input);

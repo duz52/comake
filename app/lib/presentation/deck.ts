@@ -1,8 +1,11 @@
 import type {
   Frame,
+  HexColor,
   Presentation,
   PresentationElement,
   ShapeElement,
+  ShapeFill,
+  ShapeStyle,
   Slide,
   TextElement,
   TextStyle,
@@ -26,14 +29,20 @@ function text(
   return { id, kind: 'text', name, frame, text: value, style };
 }
 
-function shape(
-  id: string,
-  name: string,
-  frame: Frame,
-  fill: string,
-  radius = 0,
-): ShapeElement {
-  return { id, kind: 'shape', name, frame, fill, radius };
+function shape(id: string, name: string, frame: Frame, style: ShapeStyle): ShapeElement {
+  return { id, kind: 'shape', name, frame, style };
+}
+
+function solidFill(color: HexColor): ShapeFill {
+  return { kind: 'solid', color, opacity: 1 };
+}
+
+function rectStyle(cornerRadius: number, color: HexColor): ShapeStyle {
+  return { fill: solidFill(color), geometry: { kind: 'rectangle', cornerRadius }, stroke: { kind: 'none' } };
+}
+
+function ellipseStyle(color: HexColor): ShapeStyle {
+  return { fill: solidFill(color), geometry: { kind: 'ellipse' }, stroke: { kind: 'none' } };
 }
 
 function slide(
@@ -78,7 +87,7 @@ const bodyStyle: TextStyle = {
 
 export function createLaunchDeck(): Presentation {
   const cover = slide('slide-cover', 'The cover', '#171713', [
-    shape('cover-bar', 'Orange sidebar', { x: 57, y: 74, width: 8, height: 344 }, '#ec6f42', 4),
+    shape('cover-bar', 'Orange sidebar', { x: 57, y: 74, width: 8, height: 344 }, rectStyle(4, '#ec6f42')),
     text('cover-kicker', 'Kicker', { x: 89, y: 83, width: 390, height: 28 }, 'COMAKE / 01', labelStyle),
     text(
       'cover-title',
@@ -94,8 +103,8 @@ export function createLaunchDeck(): Presentation {
       'A shared canvas where people and agents\nmake the work together.',
       bodyStyle,
     ),
-    shape('cover-orbit', 'Orbit', { x: 710, y: 132, width: 132, height: 132 }, '#ffd14e', 66),
-    shape('cover-orbit-core', 'Orbit core', { x: 748, y: 170, width: 56, height: 56 }, '#171713', 28),
+    shape('cover-orbit', 'Orbit', { x: 710, y: 132, width: 132, height: 132 }, ellipseStyle('#ffd14e')),
+    shape('cover-orbit-core', 'Orbit core', { x: 748, y: 170, width: 56, height: 56 }, ellipseStyle('#171713')),
     text(
       'cover-footer',
       'Footer',
@@ -121,8 +130,8 @@ export function createLaunchDeck(): Presentation {
       'Not a tab. Not a black box.\nA visible collaborator in the work itself.',
       { ...bodyStyle, color: '#4c4a42' },
     ),
-    shape('problem-line', 'Line', { x: 509, y: 304, width: 296, height: 2 }, '#1c1c18', 1),
-    shape('problem-card-one', 'Human card', { x: 507, y: 342, width: 136, height: 106 }, '#1c1c18', 14),
+    shape('problem-line', 'Line', { x: 509, y: 304, width: 296, height: 2 }, rectStyle(1, '#1c1c18')),
+    shape('problem-card-one', 'Human card', { x: 507, y: 342, width: 136, height: 106 }, rectStyle(14, '#1c1c18')),
     text(
       'problem-card-one-label',
       'Human label',
@@ -137,7 +146,7 @@ export function createLaunchDeck(): Presentation {
       'Context\nand taste',
       { ...bodyStyle, color: '#f8f2e8', fontSize: 13, lineHeight: 1.16 },
     ),
-    shape('problem-card-two', 'Agent card', { x: 669, y: 342, width: 136, height: 106 }, '#ec6f42', 14),
+    shape('problem-card-two', 'Agent card', { x: 669, y: 342, width: 136, height: 106 }, rectStyle(14, '#ec6f42')),
     text(
       'problem-card-two-label',
       'Agent label',
@@ -170,7 +179,7 @@ export function createLaunchDeck(): Presentation {
       'The human has been shaping the work.\nThe agent needs a way in—not a reset.',
       bodyStyle,
     ),
-    shape('gap-rule', 'Rule', { x: 72, y: 352, width: 811, height: 1 }, '#545148', 0),
+    shape('gap-rule', 'Rule', { x: 72, y: 352, width: 811, height: 1 }, rectStyle(0, '#545148')),
     text(
       'gap-prompt',
       'Prompt',
@@ -196,7 +205,7 @@ export function createLaunchDeck(): Presentation {
       'The human moves the shape.\nThe agent sees the new truth.',
       { ...bodyStyle, color: '#514710' },
     ),
-    shape('system-rule', 'Rule', { x: 70, y: 452, width: 818, height: 2 }, '#1b1b17', 1),
+    shape('system-rule', 'Rule', { x: 70, y: 452, width: 818, height: 2 }, rectStyle(1, '#1b1b17')),
   ]);
 
   return {

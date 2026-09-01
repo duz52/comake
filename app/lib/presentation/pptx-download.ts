@@ -14,6 +14,10 @@ export function downloadPptx(presentation: Presentation): string {
   anchor.href = objectUrl;
   anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(objectUrl);
+  // Deterministic lifecycle: the click's synchronous activation behavior has
+  // already initiated the download navigation, so revoking on the next
+  // macrotask gives the browser a full event-loop turn to consume the URL
+  // without keeping the blob alive for an arbitrary duration.
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
   return filename;
 }

@@ -58,16 +58,21 @@ export function ThemeToggle() {
         </Select.Icon>
       </Select.Trigger>
       <Select.Portal>
-        <Select.Positioner align="end" sideOffset={6}>
+        {/* alignItemWithTrigger (default) overlaps the popup with the trigger
+            in the data-side=none mode, which swallows pointer clicks on the
+            items; keep the popup outside the trigger instead. */}
+        <Select.Positioner align="end" alignItemWithTrigger={false} sideOffset={6}>
           <Select.Popup aria-label="App theme" className="theme-menu">
-            {PREFERENCE_OPTIONS.map((option) => (
-              <Select.Item className="theme-menu-item" key={option} value={option}>
-                {PREFERENCE_LABELS[option]}
-                <Select.ItemIndicator className="theme-menu-check">
-                  ✓
-                </Select.ItemIndicator>
-              </Select.Item>
-            ))}
+            <Select.List>
+              {PREFERENCE_OPTIONS.map((option) => (
+                <Select.Item className="theme-menu-item" key={option} value={option}>
+                  <Select.ItemText>{PREFERENCE_LABELS[option]}</Select.ItemText>
+                  <Select.ItemIndicator className="theme-menu-check">
+                    ✓
+                  </Select.ItemIndicator>
+                </Select.Item>
+              ))}
+            </Select.List>
           </Select.Popup>
         </Select.Positioner>
       </Select.Portal>

@@ -1,18 +1,9 @@
-import type { CSSProperties, PointerEvent } from 'react';
+import type { CSSProperties, FocusEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
 import type { PresentationSnapshot } from '../../lib/presentation/store';
-import type {
-  Frame,
-  PresentationElement,
-  ShapeElement,
-  TextElement,
-} from '../../types/presentation';
-
-export interface DragState {
-  elementId: string;
-  frame: Frame;
-  pointer: { x: number; y: number };
-}
+import type { Frame, PresentationElement } from '../../types/presentation';
+import { moveGestureFrame, type GestureState, type ResizeDirection } from './gesture';
+import { ShapeSvg } from './shape-svg';
 
 function frameStyle(frame: Frame): CSSProperties {
   return {
@@ -23,125 +14,269 @@ function frameStyle(frame: Frame): CSSProperties {
   };
 }
 
-function visibleFrame(element: PresentationElement, drag: DragState | null): Frame {
-  return drag?.elementId === element.id ? drag.frame : element.frame;
+/**
+ * The frame to render: for a move gesture, every carried target is recomputed
+ * live from its captured origin so the whole selection slides together; the
+ * primary element additionally honors its stored preview frame.
+ */
+function visibleFrame(element: PresentationElement, gesture: GestureState | null): Frame {
+  if (gesture?.kind === 'move' && gesture.moveTargets) {
+    const target = gesture.moveTargets.find((entry) => entry.id === element.id);
+    if (target) {
+      return moveGestureFrame(target.origin, gesture.originPointer, gesture.pointer);
+    }
+  }
+  if (gesture && gesture.elementId === element.id && gesture.frame) {
+    return gesture.frame;
+  }
+  return element.frame;
 }
 
-function TextArtwork({
-  element,
-  selected,
-  frame,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  element: TextElement;
-  frame: Frame;
-  onPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerMove?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerUp?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  selected?: boolean;
-}) {
-  const { style } = element;
-  return (
-    <div
-      aria-label={element.name}
-      className={`slide-element text-element${selected ? ' is-selected' : ''}`}
-      data-element-id={element.id}
-      onPointerDown={onPointerDown ? (event) => onPointerDown(event, element) : undefined}
-      onPointerMove={onPointerMove ? (event) => onPointerMove(event, element) : undefined}
-      onPointerUp={onPointerUp ? (event) => onPointerUp(event, element) : undefined}
-      style={{
-        ...frameStyle(frame),
-        color: style.color,
-        fontFamily: style.fontFamily,
-        fontSize: `${style.fontSize / 10}cqw`,
-        fontWeight: style.fontWeight,
-        letterSpacing: style.letterSpacing ? `${style.letterSpacing / 10}cqw` : undefined,
-        lineHeight: style.lineHeight,
-        textAlign: style.align,
-        textTransform: style.textTransform,
-      }}
-    >
-      {element.text}
-    </div>
-  );
+function elementStyle(element: PresentationElement, frame: Frame): CSSProperties {
+  let base: CSSProperties;
+  if (element.kind === 'text') {
+    const { style } = element;
+    base = {
+      ...frameStyle(frame),
+      color: style.color,
+      fontFamily: style.fontFamily,
+      // Font metrics are canonical slide-points against the 960pt width:
+      // `(n / 960) * 100cqw` is the exact proportional value.
+      fontSize: `${(style.fontSize / SLIDE_WIDTH) * 100}cqw`,
+      fontWeight: style.fontWeight,
+      letterSpacing: style.letterSpacing ? `${(style.letterSpacing / SLIDE_WIDTH) * 100}cqw` : undefined,
+      lineHeight: style.lineHeight,
+      textAlign: style.align,
+      textTransform: style.textTransform,
+    };
+  } else {
+    base = frameStyle(frame);
+  }
+  // Canonical rotation renders about the frame center in clockwise degrees,
+  // the same semantics the PPTX exporter writes as `rot`.
+  if (element.rotation) {
+    return { ...base, transform: `rotate(${element.rotation}deg)` };
+  }
+  return base;
 }
 
-function ShapeArtwork({
+const RESIZE_HANDLES: ReadonlyArray<{ direction: ResizeDirection; label: string }> = [
+  { direction: 'nw', label: 'north-west' },
+  { direction: 'n', label: 'north' },
+  { direction: 'ne', label: 'north-east' },
+  { direction: 'e', label: 'east' },
+  { direction: 'se', label: 'south-east' },
+  { direction: 's', label: 'south' },
+  { direction: 'sw', label: 'south-west' },
+  { direction: 'w', label: 'west' },
+];
+
+function ResizeHandle({
+  direction,
   element,
-  selected,
-  frame,
+  label,
+  onKeyDown,
   onPointerDown,
-  onPointerMove,
-  onPointerUp,
 }: {
-  element: ShapeElement;
-  frame: Frame;
-  onPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerMove?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerUp?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  selected?: boolean;
+  direction: ResizeDirection;
+  element: PresentationElement;
+  label: string;
+  onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>, element: PresentationElement, direction: ResizeDirection) => void;
+  onPointerDown?: (event: PointerEvent<HTMLButtonElement>, element: PresentationElement, direction: ResizeDirection) => void;
 }) {
   return (
-    <div
-      aria-label={element.name}
-      className={`slide-element shape-element${selected ? ' is-selected' : ''}`}
-      data-element-id={element.id}
-      onPointerDown={onPointerDown ? (event) => onPointerDown(event, element) : undefined}
-      onPointerMove={onPointerMove ? (event) => onPointerMove(event, element) : undefined}
-      onPointerUp={onPointerUp ? (event) => onPointerUp(event, element) : undefined}
-      style={{
-        ...frameStyle(frame),
-        background: element.fill,
-        borderRadius: `${element.radius ?? 0}px`,
-      }}
+    <button
+      aria-label={`Resize ${element.name} from ${label}`}
+      className={`resize-handle resize-handle-${direction}`}
+      onKeyDown={onKeyDown ? (event) => onKeyDown(event, element, direction) : undefined}
+      onPointerDown={
+        onPointerDown
+          ? (event) => {
+              // The handle owns the gesture; the element below must not start a move.
+              event.stopPropagation();
+              onPointerDown(event, element, direction);
+            }
+          : undefined
+      }
+      type="button"
     />
   );
 }
 
-export function SlideArtwork({
-  snapshot,
-  slideId,
-  drag,
-  interactive = false,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  drag?: DragState | null;
+interface ElementArtworkProps {
+  element: PresentationElement;
+  frame: Frame;
+  selected: boolean;
+  primary: boolean;
+  /** The active inline text edit surface for this element, if any. */
+  inlineEditor?: ReactNode;
+  showResizeHandles: boolean;
+  onElementFocus?: (elementId: string) => void;
+  onElementPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
+  onGesturePointerCancel?: (event: PointerEvent<HTMLElement>) => void;
+  onGesturePointerMove?: (event: PointerEvent<HTMLElement>) => void;
+  onGesturePointerUp?: (event: PointerEvent<HTMLElement>) => void;
+  onResizeKeyDown?: (event: KeyboardEvent<HTMLButtonElement>, element: PresentationElement, direction: ResizeDirection) => void;
+  onResizePointerDown?: (event: PointerEvent<HTMLButtonElement>, element: PresentationElement, direction: ResizeDirection) => void;
+  /** Open the inline editor; the caret point comes from a double-click, null from the keyboard. */
+  onStartEditing?: (elementId: string, caretPoint: { clientX: number; clientY: number } | null) => void;
+}
+
+function ElementArtwork({
+  element,
+  frame,
+  selected,
+  primary,
+  inlineEditor,
+  showResizeHandles,
+  onElementFocus,
+  onElementPointerDown,
+  onGesturePointerCancel,
+  onGesturePointerMove,
+  onGesturePointerUp,
+  onResizeKeyDown,
+  onResizePointerDown,
+  onStartEditing,
+}: ElementArtworkProps) {
+  // Double-click and Enter/F2 open the inline editor on unlocked text.
+  const editableText = !inlineEditor && element.kind === 'text' && !element.locked;
+  return (
+    <div
+      aria-label={`${element.name}, ${element.kind} element`}
+      className={`slide-element ${element.kind}-element${selected ? ' is-selected' : ''}${primary ? ' is-primary' : ''}${element.locked ? ' is-locked' : ''}${inlineEditor ? ' is-editing' : ''}`}
+      data-element-id={element.id}
+      onDoubleClick={
+        editableText
+          ? (event: MouseEvent) => {
+              // The resize handles are controls, not text surface: a
+              // double-click on a handle must not open the editor.
+              if (event.target instanceof HTMLElement && event.target.closest('.resize-handle')) {
+                return;
+              }
+              onStartEditing?.(element.id, { clientX: event.clientX, clientY: event.clientY });
+            }
+          : undefined
+      }
+      onFocus={onElementFocus ? (event: FocusEvent<HTMLDivElement>) => onElementFocus(element.id) : undefined}
+      onKeyDown={
+        editableText && onStartEditing
+          ? (event: KeyboardEvent<HTMLDivElement>) => {
+              if (event.key === 'Enter' || event.key === 'F2') {
+                event.preventDefault();
+                event.stopPropagation();
+                onStartEditing(element.id, null);
+              }
+            }
+          : undefined
+      }
+      onPointerDown={
+        onElementPointerDown
+          ? // No preventDefault: CanvasStage blurs the focused inspector field
+            // before mutating the selection, so its draft commits against the
+            // element it was editing, and the browser's mousedown focus shift
+            // still lands on the clicked element. Pointer focus never matches
+            // :focus-visible, so mouse selection shows no ring.
+            (event) => onElementPointerDown(event, element)
+          : undefined
+      }
+      onPointerMove={onGesturePointerMove}
+      onPointerUp={onGesturePointerUp}
+      style={elementStyle(element, frame)}
+      tabIndex={onElementPointerDown ? 0 : undefined}
+    >
+      {inlineEditor ??
+        (element.kind === 'shape' ? (
+          <ShapeSvg element={element} frame={frame} />
+        ) : (
+          element.text
+        ))}
+      {showResizeHandles ? (
+        RESIZE_HANDLES.map(({ direction, label }) => (
+          <ResizeHandle
+            direction={direction}
+            element={element}
+            key={direction}
+            label={label}
+            onKeyDown={onResizeKeyDown}
+            onPointerDown={onResizePointerDown}
+          />
+        ))
+      ) : null}
+    </div>
+  );
+}
+
+export interface SlideArtworkProps {
+  /** Live gesture preview; only rendered on the interactive canvas. */
+  gesture?: GestureState | null;
   interactive?: boolean;
-  onPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerMove?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
-  onPointerUp?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
+  /** The element currently being inline-edited; its surface renders in place. */
+  editingElementId?: string | null;
+  /** The editing surface node for {@link editingElementId}. */
+  inlineEditor?: ReactNode | null;
+  onElementFocus?: (elementId: string) => void;
+  onElementPointerDown?: (event: PointerEvent<HTMLDivElement>, element: PresentationElement) => void;
+  onGesturePointerCancel?: (event: PointerEvent<HTMLElement>) => void;
+  onGesturePointerMove?: (event: PointerEvent<HTMLElement>) => void;
+  onGesturePointerUp?: (event: PointerEvent<HTMLElement>) => void;
+  onResizeKeyDown?: (event: KeyboardEvent<HTMLButtonElement>, element: PresentationElement, direction: ResizeDirection) => void;
+  onResizePointerDown?: (event: PointerEvent<HTMLButtonElement>, element: PresentationElement, direction: ResizeDirection) => void;
+  /** Open the inline editor; the caret point comes from a double-click, null from the keyboard. */
+  onStartEditing?: (elementId: string, caretPoint: { clientX: number; clientY: number } | null) => void;
+  selectedElementIds?: readonly string[];
   slideId: string;
   snapshot: PresentationSnapshot;
-}) {
+}
+
+/**
+ * Renders one slide's canonical elements. On the interactive canvas it also
+ * renders the selection outline, the eight resize handles of the primary
+ * element, per-element keyboard focus, the inline text editor, and the
+ * gesture preview; in thumbnails and Present mode it is a plain,
+ * non-interactive rendering.
+ */
+export function SlideArtwork({
+  gesture = null,
+  interactive = false,
+  editingElementId = null,
+  inlineEditor = null,
+  onElementFocus,
+  onElementPointerDown,
+  onGesturePointerCancel,
+  onGesturePointerMove,
+  onGesturePointerUp,
+  onResizeKeyDown,
+  onResizePointerDown,
+  onStartEditing,
+  selectedElementIds = [],
+  slideId,
+  snapshot,
+}: SlideArtworkProps) {
   const slide = snapshot.presentation.slides[slideId];
-  const selectedElementId = interactive ? snapshot.session.selectedElementId : undefined;
   return (
-    <div className="slide-artwork" style={{ background: slide.background }}>
+    <div aria-hidden={!interactive} className="slide-artwork" style={{ background: slide.background }}>
       {slide.elementOrder.map((elementId) => {
         const element = slide.elements[elementId];
-        const frame = visibleFrame(element, drag ?? null);
-        const handlers = interactive
-          ? { onPointerDown, onPointerMove, onPointerUp }
-          : { onPointerDown: undefined, onPointerMove: undefined, onPointerUp: undefined };
-        return element.kind === 'text' ? (
-          <TextArtwork
+        const selected = interactive && selectedElementIds.includes(element.id);
+        const primary = selected && selectedElementIds[0] === element.id;
+        const editing = interactive && editingElementId === element.id;
+        return (
+          <ElementArtwork
             element={element}
-            frame={frame}
+            frame={visibleFrame(element, gesture)}
+            inlineEditor={editing ? inlineEditor : undefined}
             key={element.id}
-            selected={selectedElementId === element.id}
-            {...handlers}
-          />
-        ) : (
-          <ShapeArtwork
-            element={element}
-            frame={frame}
-            key={element.id}
-            selected={selectedElementId === element.id}
-            {...handlers}
+            primary={primary}
+            selected={selected}
+            showResizeHandles={primary && !element.locked && !editing}
+            onElementFocus={interactive ? onElementFocus : undefined}
+            onElementPointerDown={interactive ? onElementPointerDown : undefined}
+            onGesturePointerCancel={interactive ? onGesturePointerCancel : undefined}
+            onGesturePointerMove={interactive ? onGesturePointerMove : undefined}
+            onGesturePointerUp={interactive ? onGesturePointerUp : undefined}
+            onResizeKeyDown={interactive ? onResizeKeyDown : undefined}
+            onResizePointerDown={interactive ? onResizePointerDown : undefined}
+            onStartEditing={interactive ? onStartEditing : undefined}
           />
         );
       })}

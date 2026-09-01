@@ -1,129 +1,51 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type PointerEvent,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { agentActor, humanActor } from '../../lib/presentation/actors';
-import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/deck';
+import { humanActor } from '../../lib/presentation/actors';
 import { presentationSlidePath } from '../../lib/presentation/location';
 import { downloadPptx } from '../../lib/presentation/pptx-download';
-import { slideTitleText } from '../../lib/presentation/document';
-import {
-  PresentationStore,
-  type PresentationSnapshot,
-} from '../../lib/presentation/store';
+import { PresentationStore, type PresentationSnapshot } from '../../lib/presentation/store';
 import { useWebMcp } from '../../lib/presentation/webmcp';
-import type { ChangeSet, Frame, PresentationElement } from '../../types/presentation';
-import { ThemeToggle } from '../theme-toggle';
-import { Button } from '../ui/button';
-import { Tooltip } from '../ui/tooltip';
-import { SlideArtwork, type DragState } from './slide-artwork';
+import type { ChangeSet, Comment, TextStyle } from '../../types/presentation';
+import { AgentPanel } from './agent-panel';
+import { CanvasStage } from './canvas-stage';
+import {
+  addShapeElement,
+  addSlide as commandAddSlide,
+  addSlideAfter as commandAddSlideAfter,
+  alignElements,
+  deleteElements,
+  deleteSlide as commandDeleteSlide,
+  duplicateElements,
+  duplicateSlide as commandDuplicateSlide,
+  reorderElements,
+  updateTextStyle,
+  type Alignment,
+  type CommandEnv,
+  type ElementOrderDirection,
+} from './commands';
+import { CommandBar, type ToolMode } from './command-bar';
+import {
+  commandsForSurface,
+  deriveSelectionFlags,
+  INSPECTOR_MIN_VIEWPORT,
+  shortcutMatchesKey,
+  type CommandContext,
+} from './command-registry';
+import { CommandPalette } from './command-palette';
+import { CommentsPanel } from './comments-panel';
+import { ActivityPanel } from './activity-panel';
+import { EditorHeader, type DrawerKind } from './editor-header';
+import { EditorStatusBar } from './editor-status-bar';
+import { InspectorPanel } from './inspector-panel';
+import { PanelDrawer } from './panel-drawer';
+import { PresentMode } from './present-mode';
+import { SlideRail } from './slide-rail';
+import { slideDisplayName } from './slide-label';
+
+const ZOOM_STEP = 0.25;
 
 function usePresentation(store: PresentationStore): PresentationSnapshot {
-  return useSyncExternalStore(
-    store.subscribe,
-    store.getSnapshot,
-    store.getSnapshot,
-  );
-}
-
-function formatChangeTime(value: string): string {
-  const date = new Date(value);
-  return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(date);
-}
-
-function slideLabel(snapshot: PresentationSnapshot, slideId: string): string {
-  const slide = snapshot.presentation.slides[slideId];
-  return (slideTitleText(slide) ?? slide.name).replaceAll('\n', ' ');
-}
-
-function AgentMark() {
-  return (
-    <span className="agent-mark" aria-hidden="true">
-      ✦
-    </span>
-  );
-}
-
-function demoOperations() {
-  return [
-    {
-      type: 'create_element' as const,
-      slideId: 'slide-gap',
-      element: {
-        id: 'gap-agent-card',
-        kind: 'shape' as const,
-        name: 'Agent context card',
-        frame: { x: 680, y: 122, width: 167, height: 170 },
-        fill: '#ec6f42',
-        radius: 20,
-      },
-    },
-    {
-      type: 'create_element' as const,
-      slideId: 'slide-gap',
-      element: {
-        id: 'gap-agent-card-copy',
-        kind: 'text' as const,
-        name: 'Agent context card copy',
-        frame: { x: 702, y: 149, width: 122, height: 110 },
-        text: 'AGENT\nENTERS\nHERE',
-        style: {
-          color: '#1d1d18',
-          fontFamily: 'IBM Plex Mono, monospace',
-          fontSize: 18,
-          fontWeight: 700 as const,
-          letterSpacing: 1,
-          lineHeight: 1.05,
-        },
-      },
-    },
-    {
-      type: 'create_element' as const,
-      slideId: 'slide-system',
-      element: {
-        id: 'system-state-card',
-        kind: 'shape' as const,
-        name: 'Shared state card',
-        frame: { x: 527, y: 322, width: 295, height: 93 },
-        fill: '#1d1d18',
-        radius: 14,
-      },
-    },
-    {
-      type: 'create_element' as const,
-      slideId: 'slide-system',
-      element: {
-        id: 'system-state-card-copy',
-        kind: 'text' as const,
-        name: 'Shared state card copy',
-        frame: { x: 550, y: 346, width: 248, height: 48 },
-        text: 'The latest edit\nis the brief.',
-        style: {
-          color: '#f8f2e8',
-          fontFamily: 'Fraunces, Georgia, serif',
-          fontSize: 25,
-          fontWeight: 600 as const,
-          letterSpacing: -0.8,
-          lineHeight: 1.05,
-        },
-      },
-    },
-    {
-      type: 'add_comment' as const,
-      comment: {
-        id: 'comment-pricing',
-        actor: agentActor,
-        body: 'I used the shared-state principle here. Should this become the final closing line?',
-        createdAt: new Date().toISOString(),
-        resolved: false,
-        slideId: 'slide-system',
-      },
-    },
-  ];
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
 
 export function PresentationWorkspace() {
@@ -140,23 +62,45 @@ function Workspace({ store }: { store: PresentationStore }) {
   const webMcpAvailable = useWebMcp(store);
   const navigate = useNavigate();
   const { slideId } = useParams();
-  const [drag, setDrag] = useState<DragState | null>(null);
+
+  // --- Transient shell/view state (never canonical) --------------------------
+  // The inspector and the wide-viewport flag start deterministic on every
+  // platform so the server and the first client render are identical; the
+  // matchMedia effect below corrects them right after hydration.
+  const [toolMode, setToolMode] = useState<ToolMode>('select');
+  const [fitScale, setFitScale] = useState(1);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [drawer, setDrawer] = useState<DrawerKind | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [presenting, setPresenting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
+  const toastTimerRef = useRef<number | undefined>(undefined);
+
   const activeSlideId =
     slideId && snapshot.presentation.slides[slideId] ? slideId : snapshot.session.activeSlideId;
   const activeSlide = snapshot.presentation.slides[activeSlideId];
-  const selectedElement = snapshot.session.selectedElementId
-    ? activeSlide.elements[snapshot.session.selectedElementId]
-    : undefined;
-  const changeSets = snapshot.changeSetOrder
-    .map((id) => snapshot.changeSets[id])
-    .filter((changeSet): changeSet is ChangeSet => Boolean(changeSet));
-  const latestAgentChange = [...changeSets]
-    .reverse()
-    .find((changeSet) => changeSet.actor.kind === 'agent' && !changeSet.revertedAt);
-  const comments = Object.values(snapshot.comments).filter((comment) => !comment.resolved);
+  const selectedIds = snapshot.session.selectedElementIds;
 
+  // Collapse the inspector on narrow viewports so the canvas keeps its room;
+  // the breakpoint is the registry's one inspector fact, so the toggle never
+  // renders inline while the panel cannot open.
+  const [wideViewport, setWideViewport] = useState(true);
+  useEffect(() => {
+    const media = window.matchMedia(`(max-width: ${INSPECTOR_MIN_VIEWPORT - 1}px)`);
+    const update = (): void => setWideViewport(!media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    if (!wideViewport) {
+      setInspectorOpen(false);
+    }
+  }, [wideViewport]);
+
+  // Route <-> store synchronization: the URL names the canonical slide, the
+  // store owns session focus; they converge through this single effect.
   useEffect(() => {
     if (activeSlideId !== snapshot.session.activeSlideId) {
       store.selectSlide(activeSlideId);
@@ -166,88 +110,179 @@ function Workspace({ store }: { store: PresentationStore }) {
     }
   }, [activeSlideId, navigate, slideId, snapshot.presentation.id, snapshot.session.activeSlideId, store]);
 
+  const notify = useCallback((message: string) => {
+    setToast(message);
+    window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 3600);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(toastTimerRef.current), []);
+
+  const env: CommandEnv = useMemo(
+    () => ({ slideId: activeSlide.id, snapshot, store }),
+    [activeSlide.id, snapshot, store],
+  );
+
+  // --- Slide lifecycle ---------------------------------------------------------
+
   function openSlide(nextSlideId: string): void {
     store.selectSlide(nextSlideId);
     navigate(presentationSlidePath(snapshot.presentation.id, nextSlideId));
   }
 
-  function showToast(message: string): void {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 3200);
-  }
-
-  function handlePointerDown(event: PointerEvent<HTMLDivElement>, element: PresentationElement): void {
-    if (element.locked) {
+  function addSlide(): void {
+    const result = commandAddSlide(env);
+    if (!result.ok) {
+      notify(result.notice);
       return;
     }
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    store.selectElement(element.id);
-    setDrag({
-      elementId: element.id,
-      frame: { ...element.frame },
-      pointer: { x: event.clientX, y: event.clientY },
-    });
+    store.selectSlide(result.slideId);
+    navigate(presentationSlidePath(snapshot.presentation.id, result.slideId));
   }
 
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>, element: PresentationElement): void {
-    if (!drag || drag.elementId !== element.id || !canvasRef.current) {
+  function addSlideAfter(slideId: string): void {
+    const result = commandAddSlideAfter(env, slideId);
+    if (!result.ok) {
+      notify(result.notice);
       return;
     }
-    const bounds = canvasRef.current.getBoundingClientRect();
-    const horizontalDelta = ((event.clientX - drag.pointer.x) / bounds.width) * SLIDE_WIDTH;
-    const verticalDelta = ((event.clientY - drag.pointer.y) / bounds.height) * SLIDE_HEIGHT;
-    const frame: Frame = {
-      ...drag.frame,
-      x: Math.min(SLIDE_WIDTH - drag.frame.width, Math.max(0, Math.round(drag.frame.x + horizontalDelta))),
-      y: Math.min(SLIDE_HEIGHT - drag.frame.height, Math.max(0, Math.round(drag.frame.y + verticalDelta))),
-    };
-    setDrag({ ...drag, frame });
+    store.selectSlide(result.slideId);
+    navigate(presentationSlidePath(snapshot.presentation.id, result.slideId));
   }
 
-  function handlePointerUp(event: PointerEvent<HTMLDivElement>, element: PresentationElement): void {
-    if (!drag || drag.elementId !== element.id) {
+  function duplicateSlide(slideId?: string): void {
+    const targetSlideId = slideId ?? activeSlide.id;
+    const result = commandDuplicateSlide(env, targetSlideId);
+    if (!result.ok) {
+      notify(result.notice);
       return;
     }
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    const changed =
-      drag.frame.x !== element.frame.x ||
-      drag.frame.y !== element.frame.y ||
-      drag.frame.width !== element.frame.width ||
-      drag.frame.height !== element.frame.height;
-    if (changed) {
-      store.dispatch({
-        actor: humanActor,
-        label: `Moved ${element.name}`,
-        operations: [
-          {
-            type: 'update_frame',
-            slideId: activeSlide.id,
-            elementId: element.id,
-            frame: drag.frame,
-            expectedFrame: element.frame,
-          },
-        ],
-      });
-    }
-    setDrag(null);
+    store.selectSlide(result.slideId);
+    navigate(presentationSlidePath(snapshot.presentation.id, result.slideId));
   }
 
-  function runDemoAgent(): void {
+  function deleteSlide(slideId?: string): void {
+    const targetSlideId = slideId ?? activeSlide.id;
+    if (snapshot.presentation.slideOrder.length <= 1) {
+      notify('The final slide cannot be deleted.');
+      return;
+    }
+    const result = commandDeleteSlide(env, targetSlideId);
+    if (!result.ok) {
+      notify(result.notice);
+    }
+  }
+
+  // --- Selection commands ---------------------------------------------------------
+
+  const selection = useMemo(() => deriveSelectionFlags(activeSlide, selectedIds), [activeSlide, selectedIds]);
+
+  function duplicateSelection(): void {
+    const result = duplicateElements(env, selectedIds);
+    if (!result.ok) {
+      notify(result.notice);
+      return;
+    }
+    store.selectElements(result.newIds);
+  }
+
+  function deleteSelection(): void {
+    const result = deleteElements(env, selectedIds);
+    if (!result.ok) {
+      notify(result.notice);
+    }
+  }
+
+  function alignSelection(alignment: Alignment): void {
+    const result = alignElements(env, selectedIds, alignment);
+    if (!result.ok) {
+      notify(result.notice);
+    }
+  }
+
+  function reorderSelection(direction: ElementOrderDirection): void {
+    const result = reorderElements(env, selectedIds, direction);
+    if (!result.ok) {
+      notify(result.notice);
+    }
+  }
+
+  /** The single-selection style commit, read fresh against the current selection. */
+  function applyTextStyle(style: TextStyle): void {
+    const element = selection.singleUnlockedText;
+    if (!element) {
+      return;
+    }
+    const result = updateTextStyle(env, element, style);
+    if (!result.ok) {
+      notify(result.notice);
+    }
+  }
+
+  /** Registry menu creation: a canonical shape at the menu point, selected after creation. */
+  function addShapeElementAt(point?: { x: number; y: number }): void {
+    const result = addShapeElement(env, point);
+    if (!result.ok) {
+      notify(result.notice);
+      return;
+    }
+    store.selectElement(result.elementId);
+    setToolMode('select');
+  }
+
+  // --- Comments ---------------------------------------------------------------
+
+  function openComment(comment: Comment): void {
+    store.selectSlide(comment.slideId);
+    if (comment.elementId) {
+      store.selectElement(comment.elementId);
+    }
+    navigate(presentationSlidePath(snapshot.presentation.id, comment.slideId));
+    setDrawer(null);
+  }
+
+  function resolveComment(comment: Comment): void {
     const result = store.dispatch({
-      actor: agentActor,
-      label: 'Built the co-work bridge',
-      operations: demoOperations(),
+      actor: humanActor,
+      label: 'Resolved a comment',
+      operations: [
+        {
+          type: 'resolve_comment',
+          commentId: comment.id,
+          resolved: true,
+          expectedResolved: comment.resolved,
+        },
+      ],
     });
-    showToast(result.ok ? 'GPT added five visible, reviewable changes.' : 'That change needs review before it can be applied.');
+    notify(result.ok ? 'Comment resolved.' : 'That comment could not be resolved. Please try again.');
   }
 
-  function revertAgentChange(): void {
-    if (!latestAgentChange) {
-      return;
+  function addComment(body: string): boolean {
+    const comment: Comment = {
+      id: crypto.randomUUID(),
+      actor: humanActor,
+      body,
+      createdAt: new Date().toISOString(),
+      resolved: false,
+      slideId: activeSlide.id,
+    };
+    const result = store.dispatch({
+      actor: humanActor,
+      label: 'Left a comment',
+      operations: [{ type: 'add_comment', comment }],
+    });
+    if (!result.ok) {
+      notify('The comment could not be added. Please try again.');
+      return false;
     }
-    const reverted = store.revertAgentChange(latestAgentChange.id);
-    showToast(
+    return true;
+  }
+
+  // --- Agent / history -----------------------------------------------------------
+
+  function revertAgentChange(changeSet: ChangeSet): void {
+    const reverted = store.revertAgentChange(changeSet.id);
+    notify(
       reverted
         ? 'The agent change set was reverted.'
         : 'The artifact changed after this proposal. Review it before reverting.',
@@ -256,290 +291,327 @@ function Workspace({ store }: { store: PresentationStore }) {
 
   function undoHumanChange(): void {
     const undone = store.undoLatestHumanChange();
-    showToast(undone ? 'Your latest move was undone.' : 'There is no safe human change to undo.');
+    notify(undone ? 'Your latest change was undone.' : 'There is no safe human change to undo.');
   }
+
+  function redoHumanChange(): void {
+    const redone = store.redoLatestHumanChange();
+    notify(redone ? 'Your latest undone change was redone.' : 'There is no safe change to redo.');
+  }
+
+  // --- Export / Present ------------------------------------------------------------
+
+  /** Present is a modal surface: it closes every panel and palette first. */
+  const startPresent = useCallback(() => {
+    setDrawer(null);
+    setPaletteOpen(false);
+    setPresenting(true);
+  }, []);
 
   function exportPresentation(): void {
     try {
       downloadPptx(snapshot.presentation);
-      showToast('Your editable PowerPoint file is downloading.');
+      notify('Your editable PowerPoint file is downloading.');
     } catch {
-      showToast('The presentation could not be exported. Please try again.');
+      notify('The presentation could not be exported. Please try again.');
     }
   }
 
-  function updateSelectedText(value: string): void {
-    if (!selectedElement || selectedElement.kind !== 'text' || value === selectedElement.text) {
-      return;
-    }
-    const result = store.dispatch({
-      actor: humanActor,
-      label: `Edited ${selectedElement.name}`,
-      operations: [
-        {
-          type: 'update_text',
-          slideId: activeSlide.id,
-          elementId: selectedElement.id,
-          text: value,
-          expectedText: selectedElement.text,
-        },
-      ],
-    });
-    if (!result.ok) {
-      showToast('That edit needs review before it can be applied.');
-    }
+  // --- Zoom -------------------------------------------------------------------------
+
+  const zoom = snapshot.session.zoom;
+  const zoomPercent = Math.round(fitScale * zoom * 100);
+
+  function zoomIn(): void {
+    store.setZoom(zoom + ZOOM_STEP);
   }
+
+  function zoomOut(): void {
+    store.setZoom(zoom - ZOOM_STEP);
+  }
+
+  function zoomFit(): void {
+    store.setZoom(1);
+  }
+
+  // --- The one command context --------------------------------------------------------
+
+  const primaryId = selectedIds[0];
+  const primaryElement = primaryId ? activeSlide.elements[primaryId] : undefined;
+
+  /**
+   * The single memoized registry context of the whole editor: every surface
+   * (bar, canvas menu, slide-rail menus, palette, global keys) reads the
+   * same command vocabulary from here, and no per-surface arrays or props
+   * duplicate it. The actions wrap the canonical `./commands` functions and
+   * the store; the registry never reimplements kernel logic.
+   */
+  const ctx: CommandContext = useMemo(
+    () => ({
+      snapshot,
+      store,
+      activeSlideId: activeSlide.id,
+      selectedIds,
+      primaryElement,
+      selection,
+      toolMode,
+      inspectorOpen,
+      zoomPercent,
+      inspectorSupported: wideViewport,
+      undoAvailable: snapshot.userUndoStack.length > 0,
+      redoAvailable: snapshot.userRedoStack.length > 0,
+      notify,
+      menuTarget: null,
+      menuSlideId: undefined,
+      actions: {
+        setToolMode,
+        undo: undoHumanChange,
+        redo: redoHumanChange,
+        addSlide,
+        addSlideAfter,
+        duplicateSlide,
+        deleteSlide,
+        duplicateSelection,
+        deleteSelection,
+        selectAll: () => store.selectAll(),
+        align: alignSelection,
+        reorder: reorderSelection,
+        textStyle: applyTextStyle,
+        addShape: addShapeElementAt,
+        zoomIn,
+        zoomOut,
+        zoomFit,
+        toggleInspector: () => setInspectorOpen((current) => !current),
+        toggleDrawer: (kind) => setDrawer((current) => (current === kind ? null : kind)),
+        startPresent,
+        exportPptx: exportPresentation,
+      },
+    }),
+    [
+      activeSlide,
+      env,
+      inspectorOpen,
+      notify,
+      primaryElement,
+      selectedIds,
+      selection,
+      snapshot,
+      startPresent,
+      store,
+      toolMode,
+      wideViewport,
+      zoomPercent,
+    ],
+  );
+
+  // --- Keyboard controller: the shell owns Escape and ⌘K; every other
+  // shortcut is bound from the registry's 'keys' surface. ---------------------------
+
+  const keyboardRef = useRef({
+    drawer: null as DrawerKind | null,
+    menuOpen: false,
+    paletteOpen: false,
+    presenting: false,
+  });
+  keyboardRef.current = { drawer, menuOpen, paletteOpen, presenting };
+  const ctxRef = useRef<CommandContext | null>(null);
+  ctxRef.current = ctx;
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent): void => {
+      // Another document handler (canvas resize keys, present-mode
+      // navigation, an input's own controls) already consumed this key.
+      if (event.defaultPrevented) {
+        return;
+      }
+      const target = event.target;
+      const editable =
+        target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'));
+      const mod = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+
+      // The palette is a shell surface, not a command: ⌘K toggles it from
+      // anywhere except underneath Present mode or an open context menu.
+      if (mod && key === 'k') {
+        event.preventDefault();
+        const kb = keyboardRef.current;
+        if (!kb.presenting && !kb.menuOpen) {
+          setPaletteOpen((current) => !current);
+        }
+        return;
+      }
+      if (event.key === 'Escape') {
+        // One ordered Escape owner: present -> palette -> drawer -> reset
+        // tool and selection (the canvas reset path that used to live in
+        // CanvasStage). Closing modals works even while editing; the reset
+        // fallback keeps the old input-safe behavior.
+        const kb = keyboardRef.current;
+        if (kb.presenting) {
+          event.preventDefault();
+          setPresenting(false);
+          return;
+        }
+        if (kb.paletteOpen) {
+          event.preventDefault();
+          setPaletteOpen(false);
+          return;
+        }
+        if (kb.drawer) {
+          event.preventDefault();
+          setDrawer(null);
+          return;
+        }
+        if (!editable) {
+          event.preventDefault();
+          setToolMode('select');
+          store.clearSelection();
+        }
+        return;
+      }
+      if (editable) {
+        return;
+      }
+      // Modals and transient owners suppress the registry shortcuts: inline
+      // text editing is editable; open menus, the palette, drawers, and
+      // Present mode own their keys and never let a command fire behind them.
+      const kb = keyboardRef.current;
+      if (kb.presenting || kb.paletteOpen || kb.drawer || kb.menuOpen) {
+        return;
+      }
+      // A focused resize handle owns its keys (keyboard resize); keyboard
+      // focus inside a menu popup must never trigger a canvas command.
+      if (target instanceof HTMLElement && target.closest('.resize-handle, [role="menu"]')) {
+        return;
+      }
+
+      const commandCtx = ctxRef.current;
+      if (!commandCtx) {
+        return;
+      }
+      for (const command of commandsForSurface(commandCtx, 'keys')) {
+        if (command.state !== 'enabled' || !command.shortcut) {
+          continue;
+        }
+        if (
+          shortcutMatchesKey(
+            command.shortcut,
+            { alt: event.altKey, mod, shift: event.shiftKey },
+            event.key,
+          )
+        ) {
+          event.preventDefault();
+          command.run(commandCtx);
+          return;
+        }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  // --- Derived header facts ---------------------------------------------------------
+
+  const openCommentCount = Object.values(snapshot.comments).filter((comment) => !comment.resolved).length;
+  const pendingAgentChanges = snapshot.changeSetOrder.filter((id) => {
+    const changeSet = snapshot.changeSets[id];
+    return changeSet && changeSet.actor.kind === 'agent' && !changeSet.revertedAt;
+  }).length;
+
+  // --- Render --------------------------------------------------------------------------
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-symbol">C</div>
-          <div>
-            <div className="brand-name">COMAKE</div>
-            <div className="brand-sentence">a desk for two minds</div>
-          </div>
-        </div>
-        <div className="deck-identity">
-          <span className="eyebrow">WORKSPACE / WEBMCP LAUNCH</span>
-          <strong>{snapshot.presentation.title}</strong>
-        </div>
-        <div className="topbar-actions">
-          <div className={`mcp-status${webMcpAvailable ? ' is-live' : ''}`}>
-            <span className="status-dot" />
-            {webMcpAvailable ? 'WEBMCP LIVE' : 'DEMO MODE'}
-          </div>
-          <ThemeToggle />
-          <Button className="quiet-button" onClick={undoHumanChange} type="button" variant="ghost">
-            Undo my move
-          </Button>
-          <Tooltip content="Download the current canonical artifact as PowerPoint">
-            <Button className="export-button" onClick={exportPresentation} type="button" variant="default">
-            Export .pptx <span>↗</span>
-            </Button>
-          </Tooltip>
-        </div>
-      </header>
+    <main className="editor-app">
+      <EditorHeader
+        activeDrawer={drawer}
+        canExport
+        onExport={exportPresentation}
+        onOpenDrawer={(kind) => setDrawer((current) => (current === kind ? null : kind))}
+        onPresent={startPresent}
+        openCommentCount={openCommentCount}
+        pendingAgentChanges={pendingAgentChanges}
+        snapshot={snapshot}
+        webMcpAvailable={webMcpAvailable}
+      />
+      <CommandBar ctx={ctx} />
 
-      <section className="workspace-grid">
-        <aside className="left-rail">
-          <div className="project-heading">
-            <div>
-              <span className="eyebrow">PROJECT</span>
-              <strong>WebMCP launch</strong>
-            </div>
-          </div>
-          <nav aria-label="Project artifacts" className="artifact-list">
-            <div className="artifact-item">
-              <span className="artifact-icon document-icon">≡</span>
-              <span>Product brief.doc</span>
-            </div>
-            <div className="artifact-item is-active">
-              <span className="artifact-icon deck-icon">▤</span>
-              <span>Launch deck.pptx</span>
-              <span className="artifact-live">LIVE</span>
-            </div>
-            <div className="artifact-item">
-              <span className="artifact-icon document-icon">≡</span>
-              <span>Research notes.doc</span>
-            </div>
-          </nav>
-
-          <div className="rail-divider" />
-          <div className="slides-heading">
-            <span className="eyebrow">SLIDES</span>
-            <span>{snapshot.presentation.slideOrder.length}</span>
-          </div>
-          <div className="slide-list">
-            {snapshot.presentation.slideOrder.map((slideId, index) => {
-              const isActive = slideId === activeSlide.id;
-              return (
-                <button
-                  className={`slide-thumbnail${isActive ? ' is-active' : ''}`}
-                  key={slideId}
-                  onClick={() => openSlide(slideId)}
-                  type="button"
-                >
-                  <span className="thumbnail-number">{String(index + 1).padStart(2, '0')}</span>
-                  <div className="thumbnail-preview">
-                    <SlideArtwork slideId={slideId} snapshot={snapshot} />
-                  </div>
-                  {slideId === 'slide-gap' && latestAgentChange ? <AgentMark /> : null}
-                </button>
-              );
-            })}
-          </div>
-          <div className="rail-footer">
-            <div className="collaborator-stack" aria-label="Collaborators">
-              <span className="avatar avatar-j">J</span>
-              <span className="avatar avatar-g">✦</span>
-            </div>
-            <span>2 minds in this artifact</span>
-          </div>
-        </aside>
-
-        <section className="editor-area">
-          <div className="canvas-toolbar">
-            <div className="tool-group">
-              <span className="tool-button is-active">Select</span>
-              <span className="tool-button">Text</span>
-              <span className="tool-button">Shape</span>
-            </div>
-            <div className="slide-name">
-              <span>SLIDE {snapshot.presentation.slideOrder.indexOf(activeSlide.id) + 1}</span>
-              <strong>{activeSlide.name}</strong>
-            </div>
-            <div className="zoom-readout">100%</div>
-          </div>
-          <div
-            className="canvas-stage"
-            onPointerDown={() => store.selectElement(undefined)}
-          >
-            <div className="canvas-caption top-left">960 × 540 / CANONICAL</div>
-            <div className="canvas-caption bottom-right">REV {String(snapshot.presentation.revision).padStart(3, '0')}</div>
-            <div className="slide-frame" ref={canvasRef}>
-              <SlideArtwork
-                drag={drag}
-                interactive
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                slideId={activeSlide.id}
-                snapshot={snapshot}
-              />
-            </div>
-            <div className="canvas-hint">Drag any element. Your move becomes the agent’s latest context.</div>
-          </div>
+      <div className={`editor-main${inspectorOpen && wideViewport ? '' : ' inspector-closed'}`}>
+        <SlideRail ctx={ctx} onOpenSlide={openSlide} />
+        <section aria-label="Canvas" className="canvas-column">
+          <CanvasStage
+            ctx={ctx}
+            keyboardEnabled={!paletteOpen && !drawer && !presenting && !menuOpen}
+            notify={notify}
+            onFitScaleChange={setFitScale}
+            onMenuOpenChange={setMenuOpen}
+            onToolModeChange={setToolMode}
+            selectedIds={selectedIds}
+            slideId={activeSlide.id}
+            snapshot={snapshot}
+            store={store}
+            toolMode={toolMode}
+            zoom={zoom}
+          />
         </section>
+        {inspectorOpen && wideViewport ? (
+          <InspectorPanel
+            notify={notify}
+            primaryId={primaryId}
+            selectedIds={selectedIds}
+            slideId={activeSlide.id}
+            snapshot={snapshot}
+            store={store}
+          />
+        ) : null}
+      </div>
 
-        <aside className="right-rail">
-          <div className="agent-panel">
-            <div className="agent-heading">
-              <div className="agent-avatar-large">
-                <AgentMark />
-              </div>
-              <div>
-                <span className="eyebrow">COLLABORATOR</span>
-                <strong>GPT is in the room</strong>
-              </div>
-              <span className="presence-pill">seeing live state</span>
-            </div>
-            <p>
-              It can inspect this artifact, make atomic edits, leave comments, and export the same deck
-              you are editing.
-            </p>
-            <Button className="agent-action" onClick={runDemoAgent} type="button" variant="ember">
-              <AgentMark />
-              {latestAgentChange ? 'Add another agent pass' : 'Run the agent step'}
-            </Button>
-          </div>
+      <EditorStatusBar
+        revision={snapshot.presentation.revision}
+        selectedCount={selectedIds.length}
+        slideCount={snapshot.presentation.slideOrder.length}
+        slideName={slideDisplayName(activeSlide)}
+        slideNumber={snapshot.presentation.slideOrder.indexOf(activeSlide.id) + 1}
+      />
 
-          <section className="changes-panel">
-            <div className="panel-title-row">
-              <div>
-                <span className="eyebrow">CHANGESET</span>
-                <h2>What changed</h2>
-              </div>
-              <span className="change-count">{latestAgentChange ? latestAgentChange.operations.length : 0}</span>
-            </div>
-            {latestAgentChange ? (
-              <div className="change-card">
-                <div className="change-card-heading">
-                  <div>
-                    <span className="actor-line">
-                      <AgentMark /> GPT made {latestAgentChange.operations.length} changes
-                    </span>
-                    <strong>{latestAgentChange.label}</strong>
-                  </div>
-                  <time>{formatChangeTime(latestAgentChange.createdAt)}</time>
-                </div>
-                <ul className="operation-list">
-                  {latestAgentChange.operations.map((operation, index) => (
-                    <li key={`${operation.type}-${index}`}>
-                      <span className="operation-symbol">{operation.type === 'add_comment' ? '•' : '+'}</span>
-                      {operation.type === 'add_comment'
-                        ? 'Left a question for review'
-                        : operation.type === 'create_element'
-                          ? `Added ${operation.element.name}`
-                          : operation.type.replaceAll('_', ' ')}
-                    </li>
-                  ))}
-                </ul>
-                <Button className="revert-button" onClick={revertAgentChange} type="button" variant="outline">
-                  Revert this set
-                </Button>
-              </div>
-            ) : (
-              <div className="empty-change-state">
-                <AgentMark />
-                <p>No agent changes yet.</p>
-                <span>The canvas is ready for a teammate.</span>
-              </div>
-            )}
-          </section>
+      {drawer === 'agent' ? (
+        <PanelDrawer onClose={() => setDrawer(null)} title="Agent">
+          <AgentPanel
+            onRevertAgentChange={revertAgentChange}
+            snapshot={snapshot}
+            webMcpAvailable={webMcpAvailable}
+          />
+        </PanelDrawer>
+      ) : null}
+      {drawer === 'comments' ? (
+        <PanelDrawer onClose={() => setDrawer(null)} title="Comments">
+          <CommentsPanel
+            onAddComment={addComment}
+            onOpenComment={openComment}
+            onResolveComment={resolveComment}
+            snapshot={snapshot}
+          />
+        </PanelDrawer>
+      ) : null}
+      {drawer === 'activity' ? (
+        <PanelDrawer onClose={() => setDrawer(null)} title="Activity">
+          <ActivityPanel onRevertAgentChange={revertAgentChange} snapshot={snapshot} />
+        </PanelDrawer>
+      ) : null}
 
-          <section className="inspector-panel">
-            <div className="panel-title-row compact">
-              <div>
-                <span className="eyebrow">INSPECTOR</span>
-                <h2>{selectedElement ? selectedElement.name : 'Nothing selected'}</h2>
-              </div>
-              {selectedElement ? <span className="element-kind">{selectedElement.kind}</span> : null}
-            </div>
-            {selectedElement?.kind === 'text' ? (
-              <label className="text-editor-field">
-                <span>CONTENT</span>
-                <textarea
-                  defaultValue={selectedElement.text}
-                  key={selectedElement.id + selectedElement.text}
-                  onBlur={(event) => updateSelectedText(event.target.value)}
-                  rows={4}
-                />
-              </label>
-            ) : selectedElement ? (
-              <div className="shape-inspector">
-                <div className="color-swatch" style={{ background: selectedElement.fill }} />
-                <span>Shape on the shared canvas</span>
-              </div>
-            ) : (
-              <p className="inspector-empty">Select a word, card, or shape to make a human edit.</p>
-            )}
-            {selectedElement ? (
-              <div className="frame-values">
-                <span>X {Math.round(selectedElement.frame.x)}</span>
-                <span>Y {Math.round(selectedElement.frame.y)}</span>
-                <span>W {Math.round(selectedElement.frame.width)}</span>
-                <span>H {Math.round(selectedElement.frame.height)}</span>
-              </div>
-            ) : null}
-          </section>
+      <CommandPalette ctx={ctx} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
 
-          <section className="comments-panel">
-            <div className="panel-title-row compact">
-              <div>
-                <span className="eyebrow">COMMENTS</span>
-                <h2>{comments.length} open</h2>
-              </div>
-            </div>
-            {comments.length > 0 ? (
-              comments.map((comment) => (
-                <div className="comment-card" key={comment.id}>
-                  <span className="comment-author">
-                    <AgentMark /> {comment.actor.name}
-                  </span>
-                  <p>{comment.body}</p>
-                  <button onClick={() => openSlide(comment.slideId)} type="button">
-                    Go to {slideLabel(snapshot, comment.slideId)} →
-                  </button>
-                </div>
-              ))
-            ) : (
-              <p className="comments-empty">Questions from your agent will stay attached to the artifact.</p>
-            )}
-          </section>
-        </aside>
-      </section>
-      {toast ? <div className="toast" role="status">{toast}</div> : null}
+      {presenting ? (
+        <PresentMode
+          onExit={() => setPresenting(false)}
+          snapshot={snapshot}
+          startSlideId={activeSlide.id}
+        />
+      ) : null}
+
+      {toast ? (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      ) : null}
     </main>
   );
 }

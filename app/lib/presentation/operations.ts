@@ -1,10 +1,18 @@
 import { actorMatches, agentActor, knownActors } from './actors';
+import { SLIDE_HEIGHT, SLIDE_WIDTH } from './deck';
+import { frameFitsPresentation, isCanonicalColor, strokeDashes } from './document';
 import type {
   Actor,
   Comment,
   Frame,
+  PresentationElement,
   PresentationOperation,
   ShapeElement,
+  ShapeFill,
+  ShapeGeometry,
+  ShapeStroke,
+  ShapeStyle,
+  Slide,
   TextElement,
   TextStyle,
 } from '../../types/presentation';
@@ -58,6 +66,32 @@ function parsePositiveNumber(value: unknown, subject: string): ParseResult<numbe
   return number;
 }
 
+function parseNonNegativeNumber(value: unknown, subject: string): ParseResult<number> {
+  const number = parseFiniteNumber(value, subject);
+  if (!number.ok) return number;
+  if (number.value < 0) {
+    return parseFailure(`${subject} must be a non-negative finite number.`);
+  }
+  return number;
+}
+
+function parseNonNegativeSafeInteger(value: unknown, subject: string): ParseResult<number> {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    return parseFailure(`${subject} must be a non-negative safe integer.`);
+  }
+  return { ok: true, value };
+}
+
+/** The canonical color grammar: strict `#RRGGBB` hex, nothing else. */
+function parseCanonicalColor(value: unknown, subject: string): ParseResult<string> {
+  const string = parseString(value, subject);
+  if (!string.ok) return string;
+  if (!isCanonicalColor(string.value)) {
+    return parseFailure(`${subject} must be a strict #RRGGBB hex color like "#ec6f42".`);
+  }
+  return string;
+}
+
 function parseString(value: unknown, subject: string): ParseResult<string> {
   if (typeof value !== 'string') {
     return parseFailure(`${subject} must be a string.`);
@@ -103,6 +137,19 @@ function parseOptional<T>(
   return parse(value, subject);
 }
 
+function parseStringArray(value: unknown, subject: string): ParseResult<string[]> {
+  if (!Array.isArray(value)) {
+    return parseFailure(`${subject} must be an array of strings.`);
+  }
+  const entries: string[] = [];
+  for (const [index, entry] of value.entries()) {
+    const parsed = parseString(entry, `${subject}[${index}]`);
+    if (!parsed.ok) return parsed;
+    entries.push(parsed.value);
+  }
+  return { ok: true, value: entries };
+}
+
 // --- Element and comment parsers ---------------------------------------------
 
 const textAlignments = ['left', 'center', 'right'] as const;
@@ -116,7 +163,7 @@ function parseFontWeight(value: unknown, subject: string): ParseResult<TextStyle
   return { ok: true, value: value as (typeof fontWeights)[number] };
 }
 
-function parseFrame(value: unknown, subject: string): ParseResult<Frame> {
+export function parseFrame(value: unknown, subject: string): ParseResult<Frame> {
   if (!isRecord(value)) {
     return parseFailure(`${subject} must be an object.`);
   }
@@ -132,7 +179,13 @@ function parseFrame(value: unknown, subject: string): ParseResult<Frame> {
   const height = parsePositiveNumber(value.height, `${subject}.height`);
   if (!height.ok) return height;
 
-  return { ok: true, value: { x: x.value, y: y.value, width: width.value, height: height.value } };
+  const frame: Frame = { x: x.value, y: y.value, width: width.value, height: height.value };
+  if (!frameFitsPresentation(frame, { width: SLIDE_WIDTH, height: SLIDE_HEIGHT })) {
+    return parseFailure(
+      `${subject} must have positive width and height and fit inside the ${SLIDE_WIDTH}x${SLIDE_HEIGHT} presentation.`,
+    );
+  }
+  return { ok: true, value: frame };
 }
 
 function parseTextStyle(value: unknown, subject: string): ParseResult<TextStyle> {
@@ -146,7 +199,7 @@ function parseTextStyle(value: unknown, subject: string): ParseResult<TextStyle>
   );
   if (unknownKey) return parseFailure(unknownKey);
 
-  const color = parseNonEmptyString(value.color, `${subject}.color`);
+  const color = parseCanonicalColor(value.color, `${subject}.color`);
   if (!color.ok) return color;
   const fontFamily = parseNonEmptyString(value.fontFamily, `${subject}.fontFamily`);
   if (!fontFamily.ok) return fontFamily;
@@ -227,11 +280,105 @@ function parseTextElement(value: unknown, subject: string): ParseResult<TextElem
   return { ok: true, value: { ...base.value, kind: 'text', style: style.value, text: text.value } };
 }
 
+/** Fractional opacity: finite, > 0, ≤ 1 (mirrors kernel `isCanonicalOpacity`). */
+function parseOpacity(value: unknown, subject: string): ParseResult<number> {
+  const number = parseFiniteNumber(value, subject);
+  if (!number.ok) return number;
+  if (number.value <= 0 || number.value > 1) {
+    return parseFailure(`${subject} must be a fraction greater than 0 and at most 1.`);
+  }
+  return number;
+}
+
+function parseShapeGeometry(value: unknown, subject: string): ParseResult<ShapeGeometry> {
+  if (!isRecord(value)) return parseFailure(`${subject} must be an object.`);
+  const kind = value.kind;
+  if (kind === 'rectangle') {
+    const unknownKey = rejectUnknownKeys(value, ['cornerRadius', 'kind'], subject);
+    if (unknownKey) return parseFailure(unknownKey);
+    const cornerRadius = parseNonNegativeNumber(value.cornerRadius, `${subject}.cornerRadius`);
+    if (!cornerRadius.ok) return cornerRadius;
+    return { ok: true, value: { kind: 'rectangle', cornerRadius: cornerRadius.value } };
+  }
+  if (kind === 'diamond' || kind === 'ellipse' || kind === 'triangle') {
+    const unknownKey = rejectUnknownKeys(value, ['kind'], subject);
+    if (unknownKey) return parseFailure(unknownKey);
+    return { ok: true, value: { kind } };
+  }
+  return parseFailure(
+    `${subject}.kind must be one of "rectangle", "ellipse", "triangle", "diamond".`,
+  );
+}
+
+function parseShapeFill(value: unknown, subject: string): ParseResult<ShapeFill> {
+  if (!isRecord(value)) return parseFailure(`${subject} must be an object.`);
+  if (value.kind === 'none') {
+    const unknownKey = rejectUnknownKeys(value, ['kind'], subject);
+    if (unknownKey) return parseFailure(unknownKey);
+    return { ok: true, value: { kind: 'none' } };
+  }
+  if (value.kind === 'solid') {
+    const unknownKey = rejectUnknownKeys(value, ['color', 'kind', 'opacity'], subject);
+    if (unknownKey) return parseFailure(unknownKey);
+    const color = parseCanonicalColor(value.color, `${subject}.color`);
+    if (!color.ok) return color;
+    const opacity = parseOpacity(value.opacity, `${subject}.opacity`);
+    if (!opacity.ok) return opacity;
+    return { ok: true, value: { kind: 'solid', color: color.value, opacity: opacity.value } };
+  }
+  return parseFailure(`${subject}.kind must be "none" or "solid".`);
+}
+
+function parseShapeStroke(value: unknown, subject: string): ParseResult<ShapeStroke> {
+  if (!isRecord(value)) return parseFailure(`${subject} must be an object.`);
+  if (value.kind === 'none') {
+    const unknownKey = rejectUnknownKeys(value, ['kind'], subject);
+    if (unknownKey) return parseFailure(unknownKey);
+    return { ok: true, value: { kind: 'none' } };
+  }
+  if (value.kind === 'solid') {
+    const unknownKey = rejectUnknownKeys(value, ['color', 'dash', 'kind', 'opacity', 'width'], subject);
+    if (unknownKey) return parseFailure(unknownKey);
+    const color = parseCanonicalColor(value.color, `${subject}.color`);
+    if (!color.ok) return color;
+    const opacity = parseOpacity(value.opacity, `${subject}.opacity`);
+    if (!opacity.ok) return opacity;
+    const width = parsePositiveNumber(value.width, `${subject}.width`);
+    if (!width.ok) return width;
+    const dash = parseEnum(value.dash, strokeDashes, `${subject}.dash`);
+    if (!dash.ok) return dash;
+    return {
+      ok: true,
+      value: {
+        kind: 'solid',
+        color: color.value,
+        dash: dash.value,
+        opacity: opacity.value,
+        width: width.value,
+      },
+    };
+  }
+  return parseFailure(`${subject}.kind must be "none" or "solid".`);
+}
+
+function parseShapeStyle(value: unknown, subject: string): ParseResult<ShapeStyle> {
+  if (!isRecord(value)) return parseFailure(`${subject} must be an object.`);
+  const unknownKey = rejectUnknownKeys(value, ['fill', 'geometry', 'stroke'], subject);
+  if (unknownKey) return parseFailure(unknownKey);
+  const geometry = parseShapeGeometry(value.geometry, `${subject}.geometry`);
+  if (!geometry.ok) return geometry;
+  const fill = parseShapeFill(value.fill, `${subject}.fill`);
+  if (!fill.ok) return fill;
+  const stroke = parseShapeStroke(value.stroke, `${subject}.stroke`);
+  if (!stroke.ok) return stroke;
+  return { ok: true, value: { fill: fill.value, geometry: geometry.value, stroke: stroke.value } };
+}
+
 function parseShapeElement(value: unknown, subject: string): ParseResult<ShapeElement> {
   if (!isRecord(value)) {
     return parseFailure(`${subject} must be an object.`);
   }
-  const unknownKey = rejectUnknownKeys(value, ['fill', 'frame', 'id', 'kind', 'locked', 'name', 'radius', 'rotation'], subject);
+  const unknownKey = rejectUnknownKeys(value, ['frame', 'id', 'kind', 'locked', 'name', 'rotation', 'style'], subject);
   if (unknownKey) return parseFailure(unknownKey);
   if (value.kind !== 'shape') {
     return parseFailure(`${subject}.kind must be "shape".`);
@@ -239,19 +386,10 @@ function parseShapeElement(value: unknown, subject: string): ParseResult<ShapeEl
 
   const base = parseElementBase(value, subject);
   if (!base.ok) return base;
-  const fill = parseNonEmptyString(value.fill, `${subject}.fill`);
-  if (!fill.ok) return fill;
+  const style = parseShapeStyle(value.style, `${subject}.style`);
+  if (!style.ok) return style;
 
-  const element: ShapeElement = { ...base.value, fill: fill.value, kind: 'shape' };
-
-  if (value.radius !== undefined) {
-    const radius = parseFiniteNumber(value.radius, `${subject}.radius`);
-    if (!radius.ok) return radius;
-    if (radius.value < 0) {
-      return parseFailure(`${subject}.radius must be a non-negative finite number.`);
-    }
-    element.radius = radius.value;
-  }
+  const element: ShapeElement = { ...base.value, kind: 'shape', style: style.value };
 
   return { ok: true, value: element };
 }
@@ -267,6 +405,75 @@ function parseElement(value: unknown, subject: string): ParseResult<TextElement 
     return parseShapeElement(value, subject);
   }
   return parseFailure(`${subject}.kind must be "text" or "shape".`);
+}
+
+function parseSlide(value: unknown, subject: string): ParseResult<Slide> {
+  if (!isRecord(value)) {
+    return parseFailure(`${subject} must be an object.`);
+  }
+  const unknownKey = rejectUnknownKeys(value, ['background', 'elementOrder', 'elements', 'id', 'name', 'notes'], subject);
+  if (unknownKey) return parseFailure(unknownKey);
+
+  const id = parseNonEmptyString(value.id, `${subject}.id`);
+  if (!id.ok) return id;
+  const name = parseNonEmptyString(value.name, `${subject}.name`);
+  if (!name.ok) return name;
+  const background = parseCanonicalColor(value.background, `${subject}.background`);
+  if (!background.ok) return background;
+
+  if (!Array.isArray(value.elementOrder)) {
+    return parseFailure(`${subject}.elementOrder must be an array.`);
+  }
+  const elementOrder: string[] = [];
+  const orderedIds = new Set<string>();
+  for (const [index, entry] of value.elementOrder.entries()) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return parseFailure(`${subject}.elementOrder[${index}] must be a non-empty string.`);
+    }
+    if (orderedIds.has(entry)) {
+      return parseFailure(`${subject}.elementOrder contains duplicate id "${entry}".`);
+    }
+    orderedIds.add(entry);
+    elementOrder.push(entry);
+  }
+
+  if (!isRecord(value.elements)) {
+    return parseFailure(`${subject}.elements must be an object.`);
+  }
+  const elements: Record<string, PresentationElement> = {};
+  for (const [key, rawElement] of Object.entries(value.elements)) {
+    const element = parseElement(rawElement, `${subject}.elements.${key}`);
+    if (!element.ok) return element;
+    if (element.value.id !== key) {
+      return parseFailure(`${subject}.elements.${key} has id "${element.value.id}" that does not match its key.`);
+    }
+    elements[key] = element.value;
+  }
+
+  for (const entry of elementOrder) {
+    if (!(entry in elements)) {
+      return parseFailure(`${subject}.elementOrder references "${entry}" which is not present in elements.`);
+    }
+  }
+  for (const key of Object.keys(elements)) {
+    if (!orderedIds.has(key)) {
+      return parseFailure(`${subject}.elementOrder is missing element "${key}".`);
+    }
+  }
+
+  const slide: Slide = {
+    id: id.value,
+    name: name.value,
+    background: background.value,
+    elementOrder,
+    elements,
+  };
+
+  const notes = parseOptional(value.notes, parseString, `${subject}.notes`);
+  if (!notes.ok) return notes;
+  if (notes.value !== undefined) slide.notes = notes.value;
+
+  return { ok: true, value: slide };
 }
 
 function parseKnownActor(value: unknown, subject: string): ParseResult<Actor> {
@@ -398,13 +605,195 @@ export function parseOperation(value: unknown): ParseResult<PresentationOperatio
       };
     }
 
+    case 'update_shape_style': {
+      const unknownKey = rejectUnknownKeys(
+        value,
+        ['elementId', 'expectedStyle', 'slideId', 'style', 'type'],
+        'update_shape_style operation',
+      );
+      if (unknownKey) return parseFailure(unknownKey);
+      const slideId = parseNonEmptyString(value.slideId, 'update_shape_style operation.slideId');
+      if (!slideId.ok) return slideId;
+      const elementId = parseNonEmptyString(value.elementId, 'update_shape_style operation.elementId');
+      if (!elementId.ok) return elementId;
+      const style = parseShapeStyle(value.style, 'update_shape_style operation.style');
+      if (!style.ok) return style;
+      const expectedStyle = parseOptional(value.expectedStyle, parseShapeStyle, 'update_shape_style operation.expectedStyle');
+      if (!expectedStyle.ok) return expectedStyle;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          slideId: slideId.value,
+          elementId: elementId.value,
+          style: style.value,
+          expectedStyle: expectedStyle.value,
+        },
+      };
+    }
+
+    case 'update_text_style': {
+      const unknownKey = rejectUnknownKeys(
+        value,
+        ['elementId', 'expectedStyle', 'slideId', 'style', 'type'],
+        'update_text_style operation',
+      );
+      if (unknownKey) return parseFailure(unknownKey);
+      const slideId = parseNonEmptyString(value.slideId, 'update_text_style operation.slideId');
+      if (!slideId.ok) return slideId;
+      const elementId = parseNonEmptyString(value.elementId, 'update_text_style operation.elementId');
+      if (!elementId.ok) return elementId;
+      const style = parseTextStyle(value.style, 'update_text_style operation.style');
+      if (!style.ok) return style;
+      const expectedStyle = parseOptional(value.expectedStyle, parseTextStyle, 'update_text_style operation.expectedStyle');
+      if (!expectedStyle.ok) return expectedStyle;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          slideId: slideId.value,
+          elementId: elementId.value,
+          style: style.value,
+          expectedStyle: expectedStyle.value,
+        },
+      };
+    }
+
+    case 'update_element_order': {
+      const unknownKey = rejectUnknownKeys(
+        value,
+        ['elementOrder', 'expectedElementOrder', 'slideId', 'type'],
+        'update_element_order operation',
+      );
+      if (unknownKey) return parseFailure(unknownKey);
+      const slideId = parseNonEmptyString(value.slideId, 'update_element_order operation.slideId');
+      if (!slideId.ok) return slideId;
+      if (!Array.isArray(value.elementOrder)) {
+        return parseFailure('update_element_order operation.elementOrder must be an array.');
+      }
+      const elementOrder: string[] = [];
+      const orderedIds = new Set<string>();
+      for (const [index, entry] of value.elementOrder.entries()) {
+        if (typeof entry !== 'string' || entry.length === 0) {
+          return parseFailure(`update_element_order operation.elementOrder[${index}] must be a non-empty string.`);
+        }
+        if (orderedIds.has(entry)) {
+          return parseFailure(`update_element_order operation.elementOrder contains duplicate id "${entry}".`);
+        }
+        orderedIds.add(entry);
+        elementOrder.push(entry);
+      }
+      const expectedElementOrder = parseOptional(
+        value.expectedElementOrder,
+        parseStringArray,
+        'update_element_order operation.expectedElementOrder',
+      );
+      if (!expectedElementOrder.ok) return expectedElementOrder;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          slideId: slideId.value,
+          elementOrder,
+          expectedElementOrder: expectedElementOrder.value,
+        },
+      };
+    }
+
+    case 'update_slide': {
+      const unknownKey = rejectUnknownKeys(
+        value,
+        [
+          'background',
+          'expectedBackground',
+          'expectedName',
+          'expectedNotes',
+          'name',
+          'notes',
+          'slideId',
+          'type',
+        ],
+        'update_slide operation',
+      );
+      if (unknownKey) return parseFailure(unknownKey);
+      const slideId = parseNonEmptyString(value.slideId, 'update_slide operation.slideId');
+      if (!slideId.ok) return slideId;
+      const name = parseNonEmptyString(value.name, 'update_slide operation.name');
+      if (!name.ok) return name;
+      const background = parseCanonicalColor(value.background, 'update_slide operation.background');
+      if (!background.ok) return background;
+      const notes = parseOptional(value.notes, parseString, 'update_slide operation.notes');
+      if (!notes.ok) return notes;
+      const expectedName = parseOptional(value.expectedName, parseNonEmptyString, 'update_slide operation.expectedName');
+      if (!expectedName.ok) return expectedName;
+      const expectedBackground = parseOptional(value.expectedBackground, parseCanonicalColor, 'update_slide operation.expectedBackground');
+      if (!expectedBackground.ok) return expectedBackground;
+      const expectedNotes = parseOptional(value.expectedNotes, parseString, 'update_slide operation.expectedNotes');
+      if (!expectedNotes.ok) return expectedNotes;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          slideId: slideId.value,
+          name: name.value,
+          background: background.value,
+          notes: notes.value,
+          expectedName: expectedName.value,
+          expectedBackground: expectedBackground.value,
+          expectedNotes: expectedNotes.value,
+        },
+      };
+    }
+
+    case 'create_slide': {
+      const unknownKey = rejectUnknownKeys(value, ['insertAt', 'slide', 'type'], 'create_slide operation');
+      if (unknownKey) return parseFailure(unknownKey);
+      const slide = parseSlide(value.slide, 'create_slide operation.slide');
+      if (!slide.ok) return slide;
+      const insertAt = parseOptional(value.insertAt, parseNonNegativeSafeInteger, 'create_slide operation.insertAt');
+      if (!insertAt.ok) return insertAt;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          slide: slide.value,
+          insertAt: insertAt.value,
+        },
+      };
+    }
+
+    case 'delete_slide': {
+      const unknownKey = rejectUnknownKeys(value, ['expectedSlide', 'slideId', 'type'], 'delete_slide operation');
+      if (unknownKey) return parseFailure(unknownKey);
+      const slideId = parseNonEmptyString(value.slideId, 'delete_slide operation.slideId');
+      if (!slideId.ok) return slideId;
+      const expectedSlide = parseOptional(value.expectedSlide, parseSlide, 'delete_slide operation.expectedSlide');
+      if (!expectedSlide.ok) return expectedSlide;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          slideId: slideId.value,
+          expectedSlide: expectedSlide.value,
+        },
+      };
+    }
+
     case 'create_element': {
-      const unknownKey = rejectUnknownKeys(value, ['element', 'slideId', 'type'], 'create_element operation');
+      const unknownKey = rejectUnknownKeys(value, ['element', 'insertAt', 'slideId', 'type'], 'create_element operation');
       if (unknownKey) return parseFailure(unknownKey);
       const slideId = parseNonEmptyString(value.slideId, 'create_element operation.slideId');
       if (!slideId.ok) return slideId;
       const element = parseElement(value.element, 'create_element operation.element');
       if (!element.ok) return element;
+      const insertAt = parseOptional(value.insertAt, parseNonNegativeSafeInteger, 'create_element operation.insertAt');
+      if (!insertAt.ok) return insertAt;
 
       return {
         ok: true,
@@ -412,6 +801,7 @@ export function parseOperation(value: unknown): ParseResult<PresentationOperatio
           type,
           slideId: slideId.value,
           element: element.value,
+          insertAt: insertAt.value,
         },
       };
     }
@@ -542,6 +932,12 @@ export function parseToolInput(
 
 // --- JSON Schema (kept in lockstep with the parsers above) -----------------------
 
+const canonicalColorSchema = {
+  type: 'string',
+  pattern: '^#[0-9a-fA-F]{6}$',
+  description: 'Strict #RRGGBB hex color like "#ec6f42".',
+};
+
 const frameSchema = {
   type: 'object',
   properties: {
@@ -558,7 +954,7 @@ const textStyleSchema = {
   type: 'object',
   properties: {
     align: { enum: ['left', 'center', 'right'] },
-    color: { type: 'string', minLength: 1 },
+    color: canonicalColorSchema,
     fontFamily: { type: 'string', minLength: 1 },
     fontSize: { type: 'number', exclusiveMinimum: 0 },
     fontWeight: { enum: [400, 500, 600, 700, 800] },
@@ -586,6 +982,72 @@ const textElementSchema = {
   additionalProperties: false,
 };
 
+const shapeGeometrySchema = {
+  oneOf: [
+    {
+      type: 'object',
+      properties: {
+        kind: { const: 'rectangle' },
+        cornerRadius: {
+          type: 'number',
+          minimum: 0,
+          description: 'Authored corner radius in slide points; rendered clamped to half the shorter side.',
+        },
+      },
+      required: ['kind', 'cornerRadius'],
+      additionalProperties: false,
+    },
+    { type: 'object', properties: { kind: { const: 'ellipse' } }, required: ['kind'], additionalProperties: false },
+    { type: 'object', properties: { kind: { const: 'triangle' } }, required: ['kind'], additionalProperties: false },
+    { type: 'object', properties: { kind: { const: 'diamond' } }, required: ['kind'], additionalProperties: false },
+  ],
+};
+
+const shapeFillSchema = {
+  oneOf: [
+    { type: 'object', properties: { kind: { const: 'none' } }, required: ['kind'], additionalProperties: false },
+    {
+      type: 'object',
+      properties: {
+        kind: { const: 'solid' },
+        color: canonicalColorSchema,
+        opacity: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+      },
+      required: ['kind', 'color', 'opacity'],
+      additionalProperties: false,
+    },
+  ],
+};
+
+const shapeStrokeSchema = {
+  oneOf: [
+    { type: 'object', properties: { kind: { const: 'none' } }, required: ['kind'], additionalProperties: false },
+    {
+      type: 'object',
+      properties: {
+        kind: { const: 'solid' },
+        color: canonicalColorSchema,
+        opacity: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+        width: { type: 'number', exclusiveMinimum: 0, description: 'Stroke width in slide points.' },
+        dash: { enum: ['solid', 'dash', 'dot'] },
+      },
+      required: ['kind', 'color', 'dash', 'opacity', 'width'],
+      additionalProperties: false,
+    },
+  ],
+};
+
+const shapeStyleSchema = {
+  type: 'object',
+  properties: {
+    geometry: shapeGeometrySchema,
+    fill: shapeFillSchema,
+    stroke: shapeStrokeSchema,
+  },
+  required: ['fill', 'geometry', 'stroke'],
+  additionalProperties: false,
+};
+
 const shapeElementSchema = {
   type: 'object',
   properties: {
@@ -593,18 +1055,40 @@ const shapeElementSchema = {
     id: { type: 'string', minLength: 1, description: 'Fresh stable element id, unique within the slide.' },
     name: { type: 'string', minLength: 1 },
     frame: frameSchema,
-    fill: { type: 'string', minLength: 1, description: 'Fill color as a hex string like "#ec6f42".' },
-    radius: { type: 'number', minimum: 0 },
+    style: shapeStyleSchema,
     locked: { type: 'boolean', description: 'Locked elements can never be edited, moved, or deleted afterwards.' },
     rotation: { type: 'number' },
   },
-  required: ['kind', 'id', 'name', 'frame', 'fill'],
+  required: ['kind', 'id', 'name', 'frame', 'style'],
   additionalProperties: false,
 };
 
 const elementSchema = {
   oneOf: [textElementSchema, shapeElementSchema],
   description: 'A complete text or shape element; echo the exact field names used by read_presentation_slide.',
+};
+
+const slideSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', minLength: 1 },
+    name: { type: 'string', minLength: 1 },
+    background: canonicalColorSchema,
+    elementOrder: {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+      uniqueItems: true,
+      description: 'Every element id appears exactly once, in back-to-front order.',
+    },
+    elements: {
+      type: 'object',
+      additionalProperties: elementSchema,
+      description: 'Each key is the element id and must equal the element\'s "id" field.',
+    },
+    notes: { type: 'string' },
+  },
+  required: ['id', 'name', 'background', 'elementOrder', 'elements'],
+  additionalProperties: false,
 };
 
 const knownActorSchema = {
@@ -663,12 +1147,124 @@ const updateFrameOperationSchema = {
   additionalProperties: false,
 };
 
+const updateShapeStyleOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'update_shape_style' },
+    slideId: { type: 'string', minLength: 1 },
+    elementId: { type: 'string', minLength: 1 },
+    style: {
+      ...shapeStyleSchema,
+      description: 'The complete replacement shape style; geometry, fill, and stroke are replaced atomically.',
+    },
+    expectedStyle: {
+      ...shapeStyleSchema,
+      description: 'Optional optimistic guard: the complete style you read before editing.',
+    },
+  },
+  required: ['type', 'slideId', 'elementId', 'style'],
+  additionalProperties: false,
+};
+
+const updateTextStyleOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'update_text_style' },
+    slideId: { type: 'string', minLength: 1 },
+    elementId: { type: 'string', minLength: 1 },
+    style: {
+      ...textStyleSchema,
+      description: 'The complete replacement text style; every canonical style field is replaced atomically.',
+    },
+    expectedStyle: {
+      ...textStyleSchema,
+      description: 'Optional optimistic guard: the complete style you read before editing.',
+    },
+  },
+  required: ['type', 'slideId', 'elementId', 'style'],
+  additionalProperties: false,
+};
+
+const updateElementOrderOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'update_element_order' },
+    slideId: { type: 'string', minLength: 1 },
+    elementOrder: {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+      uniqueItems: true,
+      description: "An exact permutation of the slide's existing element ids in the new back-to-front order; nothing added, dropped, or duplicated.",
+    },
+    expectedElementOrder: {
+      type: 'array',
+      items: { type: 'string', minLength: 1 },
+      description: 'Optional optimistic guard: the element order you read before editing.',
+    },
+  },
+  required: ['type', 'slideId', 'elementOrder'],
+  additionalProperties: false,
+};
+
+const updateSlideOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'update_slide' },
+    slideId: { type: 'string', minLength: 1 },
+    name: { type: 'string', minLength: 1, description: 'The complete replacement slide name.' },
+    background: canonicalColorSchema,
+    notes: { type: 'string', description: 'Optional speaker notes; omitting them clears any existing notes.' },
+    expectedName: { type: 'string', minLength: 1, description: 'Optional optimistic guard: the name you read before editing.' },
+    expectedBackground: {
+      ...canonicalColorSchema,
+      description: 'Optional optimistic guard: the background you read before editing.',
+    },
+    expectedNotes: { type: 'string', description: 'Optional optimistic guard: the notes you read before editing.' },
+  },
+  required: ['type', 'slideId', 'name', 'background'],
+  additionalProperties: false,
+};
+
+const createSlideOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'create_slide' },
+    slide: { ...slideSchema, description: 'The complete slide to insert.' },
+    insertAt: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Optional zero-based insertion position in the current slide order (0 inserts before the first slide); omit to append at the end.',
+    },
+  },
+  required: ['type', 'slide'],
+  additionalProperties: false,
+};
+
+const deleteSlideOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'delete_slide' },
+    slideId: { type: 'string', minLength: 1 },
+    expectedSlide: {
+      ...slideSchema,
+      description: 'Optional optimistic guard: the slide exactly as it was read.',
+    },
+  },
+  required: ['type', 'slideId'],
+  additionalProperties: false,
+};
+
 const createElementOperationSchema = {
   type: 'object',
   properties: {
     type: { const: 'create_element' },
     slideId: { type: 'string', minLength: 1 },
     element: elementSchema,
+    insertAt: {
+      type: 'integer',
+      minimum: 0,
+      description: "Optional zero-based z-position in the slide's element order (0 inserts behind everything); omission appends at the top.",
+    },
   },
   required: ['type', 'slideId', 'element'],
   additionalProperties: false,
@@ -747,7 +1343,13 @@ export const presentationWriteInputSchema = {
       items: {
         oneOf: [
           updateTextOperationSchema,
+          updateTextStyleOperationSchema,
           updateFrameOperationSchema,
+          updateShapeStyleOperationSchema,
+          updateElementOrderOperationSchema,
+          updateSlideOperationSchema,
+          createSlideOperationSchema,
+          deleteSlideOperationSchema,
           createElementOperationSchema,
           deleteElementOperationSchema,
           addCommentOperationSchema,
