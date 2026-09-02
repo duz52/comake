@@ -6,6 +6,7 @@ import type {
   PresentationElement,
   PresentationOperation,
   ShapeElement,
+  ShapeGeometry,
   ShapeStyle,
   Slide,
   TextElement,
@@ -58,6 +59,18 @@ const NEW_TEXT_WIDTH = 240;
 const NEW_TEXT_HEIGHT = 56;
 const NEW_SHAPE_WIDTH = 160;
 const NEW_SHAPE_HEIGHT = 120;
+const DEFAULT_RECTANGLE_RADIUS = 8;
+
+/** Session default for the Shape tool; never written until a place click. */
+export const DEFAULT_SHAPE_GEOMETRY: ShapeGeometry = {
+  kind: 'rectangle',
+  cornerRadius: DEFAULT_RECTANGLE_RADIUS,
+};
+
+/** Canonical geometry for a Shape-tool kind choice. */
+export function shapeGeometryForKind(kind: ShapeGeometry['kind']): ShapeGeometry {
+  return kind === 'rectangle' ? { kind: 'rectangle', cornerRadius: DEFAULT_RECTANGLE_RADIUS } : { kind };
+}
 
 /**
  * A canonical new text element centered on a slide point. The empty seed is
@@ -83,10 +96,10 @@ export function newTextElement(point: { x: number; y: number }): TextElement {
 
 /**
  * A canonical new shape centered on a slide point: an explicit solid fill,
- * a rectangle geometry with the authored default corner radius, and no
- * stroke. No projection infers or clamps these defaults.
+ * the given geometry (rectangle with the authored default radius when
+ * omitted), and no stroke. No projection infers or clamps these defaults.
  */
-export function newShapeElement(point: { x: number; y: number }): ShapeElement {
+export function newShapeElement(point: { x: number; y: number }, geometry: ShapeGeometry = DEFAULT_SHAPE_GEOMETRY): ShapeElement {
   return {
     id: crypto.randomUUID(),
     kind: 'shape',
@@ -94,7 +107,7 @@ export function newShapeElement(point: { x: number; y: number }): ShapeElement {
     frame: centeredFrame(point, NEW_SHAPE_WIDTH, NEW_SHAPE_HEIGHT),
     style: {
       fill: { kind: 'solid', color: '#ec6f42', opacity: 1 },
-      geometry: { kind: 'rectangle', cornerRadius: 8 },
+      geometry,
       stroke: { kind: 'none' },
     },
   };
@@ -123,8 +136,9 @@ export async function addTextElement(
 export async function addShapeElement(
   env: CommandEnv,
   point?: { x: number; y: number },
+  geometry: ShapeGeometry = DEFAULT_SHAPE_GEOMETRY,
 ): Promise<{ ok: true; elementId: string } | { ok: false; notice: string }> {
-  const element = newShapeElement(point ?? { x: SLIDE_WIDTH / 2, y: SLIDE_HEIGHT / 2 });
+  const element = newShapeElement(point ?? { x: SLIDE_WIDTH / 2, y: SLIDE_HEIGHT / 2 }, geometry);
   const result = await dispatchHuman(env, `Added ${element.name}`, [
     { type: 'create_element', slideId: env.slideId, element },
   ]);
@@ -132,6 +146,21 @@ export async function addShapeElement(
     return result;
   }
   return { ok: true, elementId: element.id };
+}
+
+/**
+ * Replace the presentation title through the canonical
+ * `update_presentation` write. `expectedTitle` is the title the caller
+ * read; a mismatch is a conflict, never retried here.
+ */
+export async function updatePresentationTitle(
+  env: CommandEnv,
+  title: string,
+  expectedTitle: string,
+): Promise<CommandResult> {
+  return dispatchHuman(env, 'Renamed the presentation', [
+    { type: 'update_presentation', title, expectedTitle },
+  ]);
 }
 
 /** Append a fresh blank slide and focus it. */

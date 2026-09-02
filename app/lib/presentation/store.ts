@@ -56,8 +56,8 @@ type RevertOutcome = { ok: true } | { ok: false; permanent: boolean };
 /**
  * Browser store: an ephemeral mirror + session owner around the canonical
  * project server. It owns UI-only state (session, human undo stack,
- * listeners) and projects snapshots; the canonical document is the project's
- * ProjectRoom, reached exclusively through the injected {@link ProjectTransport}.
+ * listeners) and projects snapshots; the canonical document lives in the
+ * session WorkspaceRoom, reached exclusively through the injected {@link ProjectTransport}.
  *
  * Every canonical mutation is serialized at this boundary: concurrent
  * `dispatch`/undo/redo/revert calls run strictly in call order, each reading

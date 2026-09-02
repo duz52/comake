@@ -1,6 +1,12 @@
 import { DEMO_DISPLAY_NAME, isActorKind } from './actors';
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from './canvas';
-import { frameFitsPresentation, isCanonicalColor, strokeDashes } from './document';
+import {
+  frameFitsPresentation,
+  isCanonicalColor,
+  MAX_PRESENTATION_TITLE_LENGTH,
+  presentationTitleFailure,
+  strokeDashes,
+} from './document';
 import type {
   Actor,
   Comment,
@@ -106,6 +112,22 @@ function parseNonEmptyString(value: unknown, subject: string): ParseResult<strin
     return parseFailure(`${subject} must be a non-empty string.`);
   }
   return string;
+}
+
+/**
+ * Untrusted presentation title: trim, then apply the canonical title grammar.
+ * Empty-after-trim is a failure here; callers that treat a blank field as
+ * "absent" must omit the value before calling this.
+ */
+export function parsePresentationTitle(value: unknown, subject: string): ParseResult<string> {
+  const string = parseString(value, subject);
+  if (!string.ok) return string;
+  const title = string.value.trim();
+  const failure = presentationTitleFailure(title);
+  if (failure !== undefined) {
+    return parseFailure(failure);
+  }
+  return { ok: true, value: title };
 }
 
 function parseBoolean(value: unknown, subject: string): ParseResult<boolean> {
@@ -746,6 +768,32 @@ export function parseOperation(value: unknown): ParseResult<PresentationOperatio
       };
     }
 
+    case 'update_presentation': {
+      const unknownKey = rejectUnknownKeys(
+        value,
+        ['expectedTitle', 'title', 'type'],
+        'update_presentation operation',
+      );
+      if (unknownKey) return parseFailure(unknownKey);
+      const title = parsePresentationTitle(value.title, 'update_presentation operation.title');
+      if (!title.ok) return title;
+      const expectedTitle = parseOptional(
+        value.expectedTitle,
+        parsePresentationTitle,
+        'update_presentation operation.expectedTitle',
+      );
+      if (!expectedTitle.ok) return expectedTitle;
+
+      return {
+        ok: true,
+        value: {
+          type,
+          title: title.value,
+          expectedTitle: expectedTitle.value,
+        },
+      };
+    }
+
     case 'create_slide': {
       const unknownKey = rejectUnknownKeys(value, ['insertAt', 'slide', 'type'], 'create_slide operation');
       if (unknownKey) return parseFailure(unknownKey);
@@ -1220,6 +1268,28 @@ const updateSlideOperationSchema = {
   additionalProperties: false,
 };
 
+const presentationTitleSchema = {
+  type: 'string',
+  minLength: 1,
+  maxLength: MAX_PRESENTATION_TITLE_LENGTH,
+  description:
+    `The complete replacement presentation title. Non-empty after trim, at most ${MAX_PRESENTATION_TITLE_LENGTH} characters, and free of control characters.`,
+};
+
+const updatePresentationOperationSchema = {
+  type: 'object',
+  properties: {
+    type: { const: 'update_presentation' },
+    title: presentationTitleSchema,
+    expectedTitle: {
+      ...presentationTitleSchema,
+      description: 'Optional optimistic guard: the presentation title you read before editing.',
+    },
+  },
+  required: ['type', 'title'],
+  additionalProperties: false,
+};
+
 const createSlideOperationSchema = {
   type: 'object',
   properties: {
@@ -1343,6 +1413,7 @@ export const presentationWriteInputSchema = {
           updateShapeStyleOperationSchema,
           updateElementOrderOperationSchema,
           updateSlideOperationSchema,
+          updatePresentationOperationSchema,
           createSlideOperationSchema,
           deleteSlideOperationSchema,
           createElementOperationSchema,

@@ -4,11 +4,11 @@ import type { DispatchResult, PresentationDocument } from './document';
 export type { ClientDispatchRequest };
 
 /**
- * The store's server boundary: the canonical document lives in the project's
- * ProjectRoom, and this interface is the only way the browser mirror talks to
- * it. The store serializes every call; a transport implementation must never
- * retry a rejected intent itself. The client sends interaction kind only;
- * the server stamps the canonical actor.
+ * The store's server boundary: the canonical document lives in the
+ * session WorkspaceRoom, and this interface is the only way the browser
+ * mirror talks to it. The store serializes every call; a transport
+ * implementation must never retry a rejected intent itself. The client
+ * sends interaction kind only; the server stamps the canonical actor.
  */
 export interface ProjectTransport {
   /** POST one canonical dispatch; structured kernel failures are returned as typed results. */

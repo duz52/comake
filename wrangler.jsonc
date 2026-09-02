@@ -12,12 +12,12 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "PROJECT_ROOM", "class_name": "ProjectRoom" },
-      { "name": "PROJECT_REGISTRY", "class_name": "ProjectRegistry" }
+      { "name": "WORKSPACE_ROOM", "class_name": "WorkspaceRoom" }
     ]
   },
   "exports": {
-    "ProjectRoom": { "type": "durable-object", "storage": "sqlite" },
-    "ProjectRegistry": { "type": "durable-object", "storage": "sqlite" }
+    "WorkspaceRoom": { "type": "durable-object", "storage": "sqlite" },
+    "ProjectRoom": { "type": "durable-object", "state": "deleted" },
+    "ProjectRegistry": { "type": "durable-object", "state": "deleted" }
   }
 }

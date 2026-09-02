@@ -13,8 +13,8 @@ import { PresentationWorkspace } from '../components/presentation/workspace';
 
 /**
  * The canonical editor route. The loader validates the public workspace slug,
- * resolves the project from the current principal's registry, reads the
- * canonical ProjectRoom document, and validates the requested slide.
+ * reads the canonical document from the current principal's WorkspaceRoom,
+ * and validates the requested slide.
  */
 export async function loader({ context, params }: Route.LoaderArgs) {
   const env = runtimeFrom(context).env;

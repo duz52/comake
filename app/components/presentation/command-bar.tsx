@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Menu } from '@base-ui/react/menu';
+import { Tooltip } from '../ui/tooltip';
+import type { ShapeGeometry } from '../../types/presentation';
 import {
   commandsForSurface,
   commandTooltip,
@@ -12,31 +14,32 @@ import {
   type ToolMode,
 } from './command-registry';
 import { CommandIcon } from './command-icons';
+import { shapeGeometryForKind } from './commands';
+import { SHAPE_GEOMETRY_OPTIONS } from './shape-style-utils';
 
 export type { ToolMode } from './command-registry';
 
 /**
- * The command bar, rebuilt from the single registry. Persistent clusters
- * (history, tools, Duplicate/Delete, zoom, Inspector) plus contextual
- * clusters that appear only when they apply; the deterministic width-tier
- * planner (`planToolbarLayout`) moves the contextual clusters into the ⋯
- * overflow menu below 1280/1160/1120 px instead of clipping or scrolling.
- * No local command arrays, no duplicated labels or shortcut strings.
+ * The session command bar: history, canvas tools (Select / Text / Shape with
+ * a geometry menu), zoom, and inspector. Object commands live on the
+ * selection action bar. The deterministic planner (`planToolbarLayout`) only
+ * sheds the inspector toggle below the panel's own viewport threshold.
  */
 
 const CLUSTER_SEQUENCE: ReadonlyArray<{ cluster: BarCluster; dividerBefore?: boolean }> = [
   { cluster: 'history' },
   { cluster: 'tools', dividerBefore: true },
-  { cluster: 'edit', dividerBefore: true },
-  { cluster: 'order', dividerBefore: true },
-  { cluster: 'align', dividerBefore: true },
-  { cluster: 'text', dividerBefore: true },
 ];
 
-/** Clusters whose buttons are icon-only 28px controls (tooltip + aria-label). */
-const ICON_ONLY_CLUSTERS: ReadonlySet<BarCluster> = new Set(['order', 'align', 'text']);
-
-export function CommandBar({ ctx }: { ctx: CommandContext }) {
+export function CommandBar({
+  ctx,
+  onPendingShapeGeometryChange,
+  pendingShapeGeometry,
+}: {
+  ctx: CommandContext;
+  onPendingShapeGeometryChange: (geometry: ShapeGeometry) => void;
+  pendingShapeGeometry: ShapeGeometry;
+}) {
   const barRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const platform = detectPlatform();
@@ -82,6 +85,8 @@ export function CommandBar({ ctx }: { ctx: CommandContext }) {
             ctx={ctx}
             dividerBefore={dividerBefore}
             key={cluster}
+            onPendingShapeGeometryChange={onPendingShapeGeometryChange}
+            pendingShapeGeometry={pendingShapeGeometry}
             platform={platform}
           />
         );
@@ -119,12 +124,16 @@ function BarClusterGroup({
   commands,
   ctx,
   dividerBefore,
+  onPendingShapeGeometryChange,
+  pendingShapeGeometry,
   platform,
 }: {
   cluster: BarCluster;
   commands: readonly CommandListItem[];
   ctx: CommandContext;
   dividerBefore?: boolean;
+  onPendingShapeGeometryChange: (geometry: ShapeGeometry) => void;
+  pendingShapeGeometry: ShapeGeometry;
   platform: 'mac' | 'other';
 }) {
   return (
@@ -132,36 +141,124 @@ function BarClusterGroup({
       {dividerBefore ? <div className="cmd-divider" aria-hidden="true" /> : null}
       {cluster === 'tools' ? (
         <div aria-label="Canvas tool" className="cmd-group" role="radiogroup">
-          {commands.map((command) => (
-            <button
-              aria-checked={command.isChecked?.(ctx) ?? false}
-              className="tool-seg"
-              key={command.id}
-              onClick={() => command.run(ctx)}
-              role="radio"
-              title={commandTooltip(command, ctx, command.state, platform)}
-              type="button"
-            >
-              <CommandIcon icon={command.icon} />
-              {command.label}
-            </button>
-          ))}
+          {commands.map((command) =>
+            command.id === 'tool.shape' ? (
+              <ShapeSplitTool
+                command={command}
+                ctx={ctx}
+                key={command.id}
+                onPendingShapeGeometryChange={onPendingShapeGeometryChange}
+                pendingShapeGeometry={pendingShapeGeometry}
+                platform={platform}
+              />
+            ) : (
+              <ToolRadio command={command} ctx={ctx} key={command.id} platform={platform} />
+            ),
+          )}
         </div>
       ) : (
         <div className="cmd-group">
-          {commands.map((command, index) => (
-            <BarCommandButton
-              command={command}
-              ctx={ctx}
-              // Duplicate and Delete sit in one cluster with a divider between.
-              dividerBefore={cluster === 'edit' && index > 0}
-              key={command.id}
-              platform={platform}
-            />
+          {commands.map((command) => (
+            <BarCommandButton command={command} ctx={ctx} key={command.id} platform={platform} />
           ))}
         </div>
       )}
     </>
+  );
+}
+
+function ToolRadio({
+  command,
+  ctx,
+  platform,
+}: {
+  command: CommandListItem;
+  ctx: CommandContext;
+  platform: 'mac' | 'other';
+}) {
+  const tooltip = commandTooltip(command, ctx, command.state, platform);
+  return (
+    <Tooltip content={tooltip}>
+      <button
+        aria-checked={command.isChecked?.(ctx) ?? false}
+        className="tool-seg"
+        onClick={() => command.run(ctx)}
+        role="radio"
+        type="button"
+      >
+        <CommandIcon icon={command.icon} />
+        {command.label}
+      </button>
+    </Tooltip>
+  );
+}
+
+function ShapeSplitTool({
+  command,
+  ctx,
+  onPendingShapeGeometryChange,
+  pendingShapeGeometry,
+  platform,
+}: {
+  command: CommandListItem;
+  ctx: CommandContext;
+  onPendingShapeGeometryChange: (geometry: ShapeGeometry) => void;
+  pendingShapeGeometry: ShapeGeometry;
+  platform: 'mac' | 'other';
+}) {
+  const tooltip = commandTooltip(command, ctx, command.state, platform);
+  return (
+    <div className="tool-split">
+      <Tooltip content={tooltip}>
+        <button
+          aria-checked={command.isChecked?.(ctx) ?? false}
+          className="tool-seg"
+          onClick={() => command.run(ctx)}
+          role="radio"
+          type="button"
+        >
+          <CommandIcon icon={command.icon} />
+          {command.label}
+        </button>
+      </Tooltip>
+      <Menu.Root>
+        <Tooltip content="Shape geometry">
+          <Menu.Trigger
+            aria-label="Shape geometry"
+            className="tool-seg-chevron"
+            render={<button type="button" />}
+          >
+            <span aria-hidden="true">▾</span>
+          </Menu.Trigger>
+        </Tooltip>
+        <Menu.Portal>
+          <Menu.Positioner className="popup-positioner" align="start" sideOffset={4}>
+            <Menu.Popup className="bar-menu">
+              <Menu.RadioGroup value={pendingShapeGeometry.kind}>
+                {SHAPE_GEOMETRY_OPTIONS.map((option) => (
+                  <Menu.RadioItem
+                    className="bar-menu-item"
+                    closeOnClick
+                    key={option.kind}
+                    label={option.label}
+                    onClick={() => {
+                      onPendingShapeGeometryChange(shapeGeometryForKind(option.kind));
+                      ctx.actions.setToolMode('shape');
+                    }}
+                    value={option.kind}
+                  >
+                    <span>{option.label}</span>
+                    <Menu.RadioItemIndicator className="bar-menu-key">
+                      ✓
+                    </Menu.RadioItemIndicator>
+                  </Menu.RadioItem>
+                ))}
+              </Menu.RadioGroup>
+            </Menu.Popup>
+          </Menu.Positioner>
+        </Menu.Portal>
+      </Menu.Root>
+    </div>
   );
 }
 
@@ -177,7 +274,8 @@ function BarCommandButton({
   platform: 'mac' | 'other';
 }) {
   const checked = command.isChecked?.(ctx) ?? false;
-  const iconOnly = ICON_ONLY_CLUSTERS.has(command.barCluster ?? 'tools');
+  const disabled = command.state === 'disabled';
+  const tooltip = commandTooltip(command, ctx, command.state, platform);
   const classes = ['cmd-button'];
   if (checked) {
     classes.push('is-active');
@@ -185,24 +283,22 @@ function BarCommandButton({
   if (command.dangerous) {
     classes.push('is-danger');
   }
-  if (iconOnly) {
-    classes.push('cmd-icon-button');
-  }
   return (
     <>
       {dividerBefore ? <div className="cmd-divider" aria-hidden="true" /> : null}
-      <button
-        aria-label={iconOnly ? command.label : undefined}
-        aria-pressed={checked || undefined}
-        className={classes.join(' ')}
-        disabled={command.state === 'disabled'}
-        onClick={() => command.run(ctx)}
-        title={commandTooltip(command, ctx, command.state, platform)}
-        type="button"
-      >
-        <CommandIcon icon={command.icon} />
-        {iconOnly ? null : <span>{command.label}</span>}
-      </button>
+      <Tooltip content={tooltip} wrapDisabled={disabled}>
+        <button
+          aria-label={disabled ? tooltip : undefined}
+          aria-pressed={checked || undefined}
+          className={classes.join(' ')}
+          disabled={disabled}
+          onClick={() => command.run(ctx)}
+          type="button"
+        >
+          <CommandIcon icon={command.icon} />
+          <span>{command.label}</span>
+        </button>
+      </Tooltip>
     </>
   );
 }
@@ -255,17 +351,20 @@ function ZoomButton({
   label: string;
   platform: 'mac' | 'other';
 }) {
+  const disabled = command?.state === 'disabled';
+  const tooltip = command ? commandTooltip(command, ctx, command.state, platform) : label;
   return (
-    <button
-      aria-label={label}
-      className="zoom-button"
-      disabled={command?.state === 'disabled'}
-      onClick={() => command?.run(ctx)}
-      title={command ? commandTooltip(command, ctx, command.state, platform) : label}
-      type="button"
-    >
-      {children}
-    </button>
+    <Tooltip content={tooltip} wrapDisabled={disabled}>
+      <button
+        aria-label={disabled ? tooltip : label}
+        className="zoom-button"
+        disabled={disabled}
+        onClick={() => command?.run(ctx)}
+        type="button"
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -280,14 +379,15 @@ function OverflowMenu({
 }) {
   return (
     <Menu.Root>
-      <Menu.Trigger
-        aria-label="More commands"
-        className="toolbar-more"
-        render={<button type="button" />}
-        title="More commands"
-      >
-        <CommandIcon icon="ellipsis" />
-      </Menu.Trigger>
+      <Tooltip content="More commands">
+        <Menu.Trigger
+          aria-label="More commands"
+          className="toolbar-more"
+          render={<button type="button" />}
+        >
+          <CommandIcon icon="ellipsis" />
+        </Menu.Trigger>
+      </Tooltip>
       <Menu.Portal>
         <Menu.Positioner className="popup-positioner" align="end" sideOffset={4}>
           <Menu.Popup className="bar-menu">

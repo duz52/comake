@@ -12,6 +12,12 @@ export interface ModelContext {
   registerTool: (tool: RegisteredTool, options?: { signal?: AbortSignal }) => Promise<unknown>;
 }
 
+declare global {
+  interface Document {
+    modelContext?: ModelContext;
+  }
+}
+
 export interface RegisteredTool {
   description: string;
   execute: (input: unknown) => unknown | Promise<unknown>;

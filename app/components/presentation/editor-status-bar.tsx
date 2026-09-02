@@ -32,7 +32,9 @@ export function EditorStatusBar({
           {slideCount} · {slideName}
         </span>
         <span className="status-sep" aria-hidden="true">·</span>
-        <span>{selectionText}</span>
+        <span aria-atomic="true" aria-live="polite">
+          {selectionText}
+        </span>
       </div>
       <div className="status-group">
         <span className="status-hint">⌘K commands · V/T/S tools · ⌘D duplicate · Del delete</span>

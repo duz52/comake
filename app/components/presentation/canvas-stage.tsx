@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,7 +12,6 @@ import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import type { PresentationStore, PresentationSnapshot } from '../../lib/presentation/store';
 import type { Frame, PresentationElement, TextElement } from '../../types/presentation';
 import {
-  newShapeElement,
   newTextElement,
   addTextElement,
   updateFrameElements,
@@ -21,18 +21,29 @@ import type { CommandContext } from './command-registry';
 import type { ToolMode } from './command-bar';
 import { CanvasContextMenu, type CanvasMenuTarget } from './canvas-context-menu';
 import {
-  centeredFrame,
+  beginGesture,
+  cancelGesture,
+  elementPreviewFrame,
   framesEqual,
+  gestureCommitTargets,
   gesturePreviewFrame,
   keyboardMoveFrame,
   keyboardResizeDelta,
   keyboardResizeFrame,
+  releaseGesture,
+  settleGesture,
   slidePointFromClient,
+  trackGesture,
   type GestureState,
   type ResizeDirection,
-  type SlidePoint,
 } from './gesture';
 import { InlineTextEditor } from './inline-text-editor';
+import { SelectionActionBar } from './selection-action-bar';
+import {
+  placeSelectionActionBar,
+  SELECTION_BAR_ESTIMATED_WIDTH_PX,
+  SELECTION_BAR_HEIGHT_PX,
+} from './selection-bar-placement';
 import { SlideArtwork } from './slide-artwork';
 
 const ARROW_DELTAS: Record<string, [number, number]> = {
@@ -49,6 +60,24 @@ function blurActiveElement(): void {
   }
 }
 
+function unionFrames(frames: readonly Frame[]): Frame | null {
+  if (frames.length === 0) {
+    return null;
+  }
+  let left = frames[0].x;
+  let top = frames[0].y;
+  let right = frames[0].x + frames[0].width;
+  let bottom = frames[0].y + frames[0].height;
+  for (let index = 1; index < frames.length; index++) {
+    const frame = frames[index];
+    left = Math.min(left, frame.x);
+    top = Math.min(top, frame.y);
+    right = Math.max(right, frame.x + frame.width);
+    bottom = Math.max(bottom, frame.y + frame.height);
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 /** A session of inline text editing: the canonical baseline and the draft state. */
 interface EditingSession {
   elementId: string;
@@ -61,19 +90,18 @@ interface EditingSession {
 }
 
 /**
- * The interactive canvas: one browser-only gesture model for move and resize
- * (preview state during the gesture, exactly one atomic frame batch on
- * pointer-up), tool-mode element creation, the Base UI context menu,
- * inline text editing, and the element keyboard shortcuts. Everything here
- * is ephemeral; durable state goes through human store.dispatch calls in
- * `./commands`.
+ * The interactive canvas: one browser-only gesture transaction for move and
+ * resize (`tracking` while the pointer is down, `committing` until the
+ * atomic frame batch settles), tool-mode element creation, the Base UI
+ * context menu, inline text editing, and the element keyboard shortcuts.
+ * Everything here is ephemeral; durable state goes through human
+ * store.dispatch calls in `./commands`.
  */
 export function CanvasStage({
   ctx,
   keyboardEnabled,
   notify,
   onFitScaleChange,
-  onGestureActiveChange,
   onMenuOpenChange,
   onToolModeChange,
   selectedIds,
@@ -87,7 +115,6 @@ export function CanvasStage({
   keyboardEnabled: boolean;
   notify: (message: string) => void;
   onFitScaleChange: (scale: number) => void;
-  onGestureActiveChange?: (active: boolean) => void;
   onMenuOpenChange?: (open: boolean) => void;
   onToolModeChange: (mode: ToolMode) => void;
   selectedIds: readonly string[];
@@ -106,6 +133,37 @@ export function CanvasStage({
   const keyboardEnabledRef = useRef(keyboardEnabled);
   keyboardEnabledRef.current = keyboardEnabled;
   const creating = toolMode !== 'select';
+  const selectionBarObserverRef = useRef<ResizeObserver | null>(null);
+  const [selectionBarSize, setSelectionBarSize] = useState({
+    width: SELECTION_BAR_ESTIMATED_WIDTH_PX,
+    height: SELECTION_BAR_HEIGHT_PX,
+  });
+
+  const attachSelectionBar = useCallback((node: HTMLDivElement | null): void => {
+    selectionBarObserverRef.current?.disconnect();
+    selectionBarObserverRef.current = null;
+    if (!node) {
+      return;
+    }
+    const measure = (): void => {
+      const width = node.offsetWidth;
+      const height = node.offsetHeight;
+      setSelectionBarSize((current) =>
+        current.width === width && current.height === height ? current : { width, height },
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    selectionBarObserverRef.current = observer;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      selectionBarObserverRef.current?.disconnect();
+      selectionBarObserverRef.current = null;
+    };
+  }, []);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuOpenRef = useRef(menuOpen);
@@ -161,7 +219,6 @@ export function CanvasStage({
   function applyGesture(next: GestureState | null): void {
     gestureRef.current = next;
     setGesture(next);
-    onGestureActiveChange?.(next !== null);
   }
 
   function env() {
@@ -192,7 +249,8 @@ export function CanvasStage({
   function startEditing(elementId: string, caret: { clientX: number; clientY: number } | null): void {
     if (gestureRef.current || creating) {
       // Editing is a Select-mode behavior: never while a creation tool is
-      // active (its clicks place elements) or a gesture is mid-flight.
+      // active (its clicks place elements) or a gesture transaction owns
+      // the canvas.
       return;
     }
     const element = snapshot.presentation.slides[slideId].elements[elementId];
@@ -371,9 +429,8 @@ export function CanvasStage({
     if (event.button !== 0) {
       return;
     }
-    if (editingRef.current) {
-      // The edit session owns the canvas: a blank press only releases focus
-      // (the editor commits once on blur); selection and tools wait.
+    if (editingRef.current || gestureRef.current) {
+      // The edit session or a gesture transaction owns the canvas.
       return;
     }
     blurActiveElement();
@@ -383,26 +440,28 @@ export function CanvasStage({
       return;
     }
     const point = slidePointFromClient(slideRef.current!.getBoundingClientRect(), event.clientX, event.clientY);
-    const element = toolMode === 'text' ? newTextElement(point) : newShapeElement(point);
-    void store
-      .dispatch({
-        actorKind: 'human',
-        label: `Added ${element.name}`,
-        operations: [{ type: 'create_element', slideId, element }],
-      })
-      .then((result) => {
-        if (!result.ok) {
-          notify('That element could not be added. Please try again.');
-          return;
-        }
-        store.selectElement(element.id);
-        onToolModeChange('select');
-        if (element.kind === 'text') {
+    if (toolMode === 'text') {
+      const element = newTextElement(point);
+      void store
+        .dispatch({
+          actorKind: 'human',
+          label: `Added ${element.name}`,
+          operations: [{ type: 'create_element', slideId, element }],
+        })
+        .then((result) => {
+          if (!result.ok) {
+            notify('That element could not be added. Please try again.');
+            return;
+          }
+          store.selectElement(element.id);
+          onToolModeChange('select');
           // The Text tool never lands a placeholder: the fresh element opens in
           // the inline editor, and an untouched commit removes it again.
           beginEditingCreatedElement(element);
-        }
-      });
+        });
+      return;
+    }
+    ctx.actions.addShape(point);
   }
 
   // --- Pointer gestures --------------------------------------------------------
@@ -413,9 +472,9 @@ export function CanvasStage({
       // event bubble to the slide frame.
       return;
     }
-    if (editingRef.current) {
-      // The edit session owns the canvas: this press only releases focus —
-      // the editor commits once on blur; it never selects or starts a move.
+    if (editingRef.current || gestureRef.current) {
+      // The edit session or a gesture transaction owns the canvas: this
+      // press never selects or starts a second move.
       event.stopPropagation();
       return;
     }
@@ -451,16 +510,18 @@ export function CanvasStage({
     }
     event.currentTarget.setPointerCapture(event.pointerId);
     const originPointer = slidePointFromClient(slideRef.current!.getBoundingClientRect(), event.clientX, event.clientY);
-    applyGesture({
-      kind: 'move',
-      elementId: element.id,
-      elementName: element.name,
-      pointerId: event.pointerId,
-      originPointer,
-      origin: null,
-      frame: null,
-      pointer: originPointer,
-    });
+    applyGesture(
+      beginGesture(gestureRef.current, {
+        kind: 'move',
+        elementId: element.id,
+        elementName: element.name,
+        pointerId: event.pointerId,
+        originPointer,
+        origin: null,
+        frame: null,
+        pointer: originPointer,
+      }),
+    );
   }
 
   function handleResizePointerDown(
@@ -468,27 +529,29 @@ export function CanvasStage({
     element: PresentationElement,
     direction: ResizeDirection,
   ): void {
-    if (event.button !== 0) {
+    if (event.button !== 0 || gestureRef.current) {
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
     const originPointer = slidePointFromClient(slideRef.current!.getBoundingClientRect(), event.clientX, event.clientY);
-    applyGesture({
-      kind: 'resize',
-      elementId: element.id,
-      elementName: element.name,
-      pointerId: event.pointerId,
-      originPointer,
-      origin: null,
-      frame: null,
-      pointer: originPointer,
-      direction,
-    });
+    applyGesture(
+      beginGesture(gestureRef.current, {
+        kind: 'resize',
+        elementId: element.id,
+        elementName: element.name,
+        pointerId: event.pointerId,
+        originPointer,
+        origin: null,
+        frame: null,
+        pointer: originPointer,
+        direction,
+      }),
+    );
   }
 
   function handleGesturePointerMove(event: PointerEvent<HTMLElement>): void {
     const current = gestureRef.current;
-    if (!current || event.pointerId !== current.pointerId) {
+    if (!current || current.phase !== 'tracking' || event.pointerId !== current.pointerId) {
       return;
     }
     const pointer = slidePointFromClient(slideRef.current!.getBoundingClientRect(), event.clientX, event.clientY);
@@ -502,56 +565,44 @@ export function CanvasStage({
         .filter((element): element is PresentationElement => Boolean(element) && !element.locked)
         .map((element) => ({ id: element.id, name: element.name, origin: element.frame }));
       if (targets.length === 0) {
-        applyGesture(null);
+        applyGesture(cancelGesture(current, event.pointerId));
         return;
       }
       moveTargets = targets;
       origin = targets.find((target) => target.id === current.elementId)?.origin ?? targets[0].origin;
     }
-    applyGesture({
-      ...current,
-      origin,
-      moveTargets,
-      pointer,
-      frame: gesturePreviewFrame(current.kind, origin, current.originPointer, pointer, current.direction),
-    });
+    applyGesture(
+      trackGesture(current, {
+        kind: current.kind,
+        elementId: current.elementId,
+        elementName: current.elementName,
+        pointerId: current.pointerId,
+        originPointer: current.originPointer,
+        origin,
+        moveTargets,
+        pointer,
+        frame: gesturePreviewFrame(current.kind, origin, current.originPointer, pointer, current.direction),
+        direction: current.direction,
+      }),
+    );
   }
 
   function handleGesturePointerUp(event: PointerEvent<HTMLElement>): void {
-    const current = gestureRef.current;
-    if (!current || event.pointerId !== current.pointerId) {
+    const released = releaseGesture(gestureRef.current, event.pointerId);
+    applyGesture(released.gesture);
+    if (!released.commit) {
       return;
     }
-    applyGesture(null);
-    if (!current.origin || !current.frame || framesEqual(current.frame, current.origin)) {
-      return;
-    }
-    if (current.kind === 'move' && current.moveTargets) {
-      const targets = current.moveTargets.map((target) => ({
-        elementId: target.id,
-        expected: target.origin,
-        next: gesturePreviewFrame('move', target.origin, current.originPointer, current.pointer),
-      }));
-      // Exactly one committed canonical operation per gesture: the preview
-      // frames never reach the server, only this atomic batch on pointer-up.
-      void updateFrameElements(
-        env(),
-        targets.length === 1
-          ? `Moved ${targets[0].elementId === current.elementId ? current.elementName : 'an element'}`
-          : `Moved ${targets.length} elements`,
-        targets,
-      ).then((result) => {
-        if (!result.ok) {
-          handleFailedCommit(result);
-        }
-      });
-      return;
-    }
-    void updateFrameElements(
-      env(),
-      `Resized ${current.elementName}`,
-      [{ elementId: current.elementId, expected: current.origin, next: current.frame }],
-    ).then((result) => {
+    const committing = released.gesture;
+    const targets = gestureCommitTargets(committing);
+    const label =
+      committing.kind === 'move'
+        ? targets.length === 1
+          ? `Moved ${targets[0].elementId === committing.elementId ? committing.elementName : 'an element'}`
+          : `Moved ${targets.length} elements`
+        : `Resized ${committing.elementName}`;
+    void updateFrameElements(env(), label, targets).then((result) => {
+      applyGesture(settleGesture(gestureRef.current));
       if (!result.ok) {
         handleFailedCommit(result);
       }
@@ -559,9 +610,7 @@ export function CanvasStage({
   }
 
   function handleGesturePointerCancel(event: PointerEvent<HTMLElement>): void {
-    if (gestureRef.current?.pointerId === event.pointerId) {
-      applyGesture(null);
-    }
+    applyGesture(cancelGesture(gestureRef.current, event.pointerId));
   }
 
   // --- Keyboard resize on the visible handles -----------------------------------
@@ -573,6 +622,10 @@ export function CanvasStage({
   ): void {
     const [deltaWidth, deltaHeight] = keyboardResizeDelta(direction, event.key, event.shiftKey ? 10 : 1);
     if (deltaWidth === 0 && deltaHeight === 0) {
+      return;
+    }
+    if (gestureRef.current) {
+      event.preventDefault();
       return;
     }
     // Mark the event consumed so the editor-wide document handlers below
@@ -604,7 +657,7 @@ export function CanvasStage({
   function handleContextMenu(event: ReactMouseEvent): void {
     event.preventDefault();
     if (editingRef.current || gestureRef.current) {
-      // The editor or an in-flight gesture owns the surface: no menu, and no
+      // The editor or a gesture transaction owns the surface: no menu, and no
       // selection mutation from the same event. Base UI's own handler is
       // skipped so nothing opens.
       event.preventBaseUIHandler?.();
@@ -729,9 +782,15 @@ export function CanvasStage({
     if (event.defaultPrevented) {
       return;
     }
-    if (!keyboardEnabledRef.current || gestureRef.current || menuOpenRef.current) {
-      // A modal context menu or an in-flight gesture owns the keyboard: no
-      // element shortcut (delete, nudge) may fire from its keys.
+    if (gestureRef.current) {
+      // A tracking or committing gesture owns the canvas: consume the key
+      // so the shell registry cannot fire delete/nudge behind it.
+      event.preventDefault();
+      return;
+    }
+    if (!keyboardEnabledRef.current || menuOpenRef.current) {
+      // A modal context menu owns the keyboard: no element shortcut may
+      // fire from its keys.
       return;
     }
     const target = event.target;
@@ -776,6 +835,37 @@ export function CanvasStage({
   const slideWidth = Math.round(SLIDE_WIDTH * scale);
   const slideHeight = Math.round(SLIDE_HEIGHT * scale);
 
+  const showSelectionBar =
+    toolMode === 'select' &&
+    editing === null &&
+    gesture === null &&
+    !menuOpen &&
+    keyboardEnabled &&
+    selectedIds.length > 0;
+
+  const selectionUnion = useMemo(() => {
+    if (!showSelectionBar) {
+      return null;
+    }
+    const slide = snapshot.presentation.slides[slideId];
+    const frames = selectedIds
+      .map((id) => slide.elements[id])
+      .filter((element): element is PresentationElement => element !== undefined)
+      .map((element) => elementPreviewFrame(element, gesture));
+    return unionFrames(frames);
+  }, [gesture, selectedIds, showSelectionBar, slideId, snapshot]);
+
+  const selectionBarBox =
+    selectionUnion === null
+      ? null
+      : placeSelectionActionBar({
+          union: selectionUnion,
+          slideWidthPx: slideWidth,
+          slideHeightPx: slideHeight,
+          barWidth: selectionBarSize.width,
+          barHeight: selectionBarSize.height,
+        });
+
   const editingInline =
     editing && editingElement?.kind === 'text' ? (
       <InlineTextEditor
@@ -813,9 +903,10 @@ export function CanvasStage({
                   // Focus reveals an unselected element (Tab navigation) but
                   // never dismembers an existing selection: right-click
                   // focus-restore must keep a multi-selection intact.
-                  if (!selectedIdsRef.current.includes(elementId)) {
-                    store.selectElement(elementId);
+                  if (gestureRef.current || selectedIdsRef.current.includes(elementId)) {
+                    return;
                   }
+                  store.selectElement(elementId);
                 }}
                 onElementPointerDown={handleElementPointerDown}
                 onGesturePointerCancel={handleGesturePointerCancel}
@@ -828,6 +919,13 @@ export function CanvasStage({
                 slideId={slideId}
                 snapshot={snapshot}
               />
+              {showSelectionBar && selectionUnion && selectionBarBox ? (
+                <SelectionActionBar
+                  box={selectionBarBox}
+                  ctx={ctx}
+                  ref={attachSelectionBar}
+                />
+              ) : null}
             </div>
           }
         />

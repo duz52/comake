@@ -4,7 +4,7 @@ import type { DispatchRequest } from './document';
 
 /**
  * The one mapping from a verified principal plus a client interaction kind
- * onto the kernel dispatch the ProjectRoom runs. Client input cannot choose
+ * onto the kernel dispatch the WorkspaceRoom runs. Client input cannot choose
  * actor id, display name, or `system`; embedded comment actors are stamped
  * from the same principal.
  */

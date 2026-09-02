@@ -4,7 +4,7 @@ import { cloneElement, cloneSlide, type PresentationDocument } from './document'
 /**
  * Immutable presentation template: read-only code data a project is cloned
  * from. Templates are never routed, never mutated, and never persisted; the
- * registry row records provenance via `templateId`.
+ * workspace row records provenance via `templateId`.
  */
 export interface PresentationTemplate {
   readonly id: string;

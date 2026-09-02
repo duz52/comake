@@ -49,6 +49,30 @@ export function isCanonicalColor(value: string): boolean {
   return /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
+/** Hard upper bound of a presentation title. */
+export const MAX_PRESENTATION_TITLE_LENGTH = 100;
+
+/**
+ * Canonical presentation-title grammar: non-empty, already trimmed, at most
+ * 100 characters, and free of control characters. Untrusted input is trimmed
+ * by `parsePresentationTitle` before this check.
+ */
+export function presentationTitleFailure(title: string): string | undefined {
+  if (title.length === 0) {
+    return 'The presentation title must be a non-empty string.';
+  }
+  if (title !== title.trim()) {
+    return 'The presentation title cannot start or end with whitespace.';
+  }
+  if (title.length > MAX_PRESENTATION_TITLE_LENGTH) {
+    return `The presentation title can be ${MAX_PRESENTATION_TITLE_LENGTH} characters at most.`;
+  }
+  if (/[\u0000-\u001f\u007f]/.test(title)) {
+    return 'The presentation title cannot contain control characters.';
+  }
+  return undefined;
+}
+
 /**
  * An element frame is canonical only when it is finite, has positive width and
  * height, and lies fully inside the presentation bounds. Width/height stay
@@ -789,6 +813,39 @@ function applyOperation(
       };
     }
 
+    case 'update_presentation': {
+      const titleFailure = presentationTitleFailure(operation.title);
+      if (titleFailure !== undefined) {
+        return invalidInput(titleFailure);
+      }
+      if (operation.expectedTitle !== undefined) {
+        const expectedFailure = presentationTitleFailure(operation.expectedTitle);
+        if (expectedFailure !== undefined) {
+          return invalidInput(expectedFailure);
+        }
+        if (document.presentation.title !== operation.expectedTitle) {
+          return conflict(
+            'The presentation title changed since it was read. Re-read the presentation and retry.',
+          );
+        }
+      }
+
+      return {
+        inverse: {
+          type: 'update_presentation',
+          title: document.presentation.title,
+          expectedTitle: operation.title,
+        },
+        document: {
+          ...document,
+          presentation: {
+            ...document.presentation,
+            title: operation.title,
+          },
+        },
+      };
+    }
+
     case 'create_slide': {
       if (document.presentation.slides[operation.slide.id]) {
         return conflict(`Slide "${operation.slide.id}" already exists in this presentation.`);
@@ -1141,6 +1198,7 @@ function cloneOperation(operation: PresentationOperation): PresentationOperation
   switch (operation.type) {
     case 'update_text':
     case 'update_slide':
+    case 'update_presentation':
     case 'resolve_comment':
       return { ...operation };
     case 'update_shape_style':

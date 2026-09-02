@@ -11,9 +11,9 @@ import {
 
 /**
  * Presentation-level entry: validates the public workspace slug, resolves the
- * project from the current principal's registry, and deterministically lands
- * on the project's persisted initial slide. Unknown workspaces and projects
- * (including another session's ids) are thrown 404 responses.
+ * project from the current principal's WorkspaceRoom, and deterministically
+ * lands on the project's persisted initial slide. Unknown workspaces and
+ * projects (including another session's ids) are thrown 404 responses.
  */
 export async function loader({ context, params }: Route.LoaderArgs) {
   const env = runtimeFrom(context).env;

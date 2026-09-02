@@ -7,7 +7,7 @@ import { downloadPptx } from '../../lib/presentation/pptx-download';
 import { PresentationStore, type PresentationSnapshot } from '../../lib/presentation/store';
 import { HttpProjectTransport } from '../../lib/presentation/transport';
 import { useWebMcp } from '../../lib/presentation/webmcp';
-import type { ChangeSet, Comment, TextStyle } from '../../types/presentation';
+import type { ChangeSet, Comment, ShapeGeometry, TextStyle } from '../../types/presentation';
 import { AgentPanel } from './agent-panel';
 import { CanvasStage } from './canvas-stage';
 import {
@@ -15,11 +15,13 @@ import {
   addSlide as commandAddSlide,
   addSlideAfter as commandAddSlideAfter,
   alignElements,
+  DEFAULT_SHAPE_GEOMETRY,
   deleteElements,
   deleteSlide as commandDeleteSlide,
   duplicateElements,
   duplicateSlide as commandDuplicateSlide,
   reorderElements,
+  updatePresentationTitle,
   updateTextStyle,
   type Alignment,
   type CommandEnv,
@@ -43,6 +45,7 @@ import { PanelDrawer } from './panel-drawer';
 import { PresentMode } from './present-mode';
 import { SlideRail } from './slide-rail';
 import { slideDisplayName } from './slide-label';
+import { TooltipProvider } from '../ui/tooltip';
 
 const ZOOM_STEP = 0.25;
 
@@ -89,6 +92,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   // platform so the server and the first client render are identical; the
   // matchMedia effect below corrects them right after hydration.
   const [toolMode, setToolMode] = useState<ToolMode>('select');
+  const [pendingShapeGeometry, setPendingShapeGeometry] = useState<ShapeGeometry>(DEFAULT_SHAPE_GEOMETRY);
   const [fitScale, setFitScale] = useState(1);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [drawer, setDrawer] = useState<DrawerKind | null>(null);
@@ -242,7 +246,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
 
   /** Registry menu creation: a canonical shape at the menu point, selected after creation. */
   async function addShapeElementAt(point?: { x: number; y: number }): Promise<void> {
-    const result = await addShapeElement(env, point);
+    const result = await addShapeElement(env, point, pendingShapeGeometry);
     if (!result.ok) {
       notify(result.notice);
       return;
@@ -318,6 +322,13 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   async function redoHumanChange(): Promise<void> {
     const redone = await store.redoLatestHumanChange();
     notify(redone ? 'Your latest undone change was redone.' : 'There is no safe change to redo.');
+  }
+
+  async function renamePresentation(title: string, expectedTitle: string): Promise<void> {
+    const result = await updatePresentationTitle(env, title, expectedTitle);
+    if (!result.ok) {
+      notify(result.notice);
+    }
   }
 
   // --- Export / Present ------------------------------------------------------------
@@ -418,6 +429,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       env,
       inspectorOpen,
       notify,
+      pendingShapeGeometry,
       primaryElement,
       selectedIds,
       selection,
@@ -430,8 +442,10 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
     ],
   );
 
-  // --- Keyboard controller: the shell owns Escape and ⌘K; every other
-  // shortcut is bound from the registry's 'keys' surface. ---------------------------
+  // --- Keyboard controller: one owner order. An editable target owns
+  // ordinary editing keys (including Mod+K). Escape still closes a live
+  // modal (Present, palette, drawer). Every other shortcut is the registry
+  // 'keys' surface, and only fires outside editable targets. ---------------
 
   const keyboardRef = useRef({
     drawer: null as DrawerKind | null,
@@ -453,25 +467,14 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       const target = event.target;
       const editable =
         target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'));
+      const kb = keyboardRef.current;
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
 
-      // The palette is a shell surface, not a command: ⌘K toggles it from
-      // anywhere except underneath Present mode or an open context menu.
-      if (mod && key === 'k') {
-        event.preventDefault();
-        const kb = keyboardRef.current;
-        if (!kb.presenting && !kb.menuOpen) {
-          setPaletteOpen((current) => !current);
-        }
-        return;
-      }
       if (event.key === 'Escape') {
-        // One ordered Escape owner: present -> palette -> drawer -> reset
-        // tool and selection (the canvas reset path that used to live in
-        // CanvasStage). Closing modals works even while editing; the reset
-        // fallback keeps the old input-safe behavior.
-        const kb = keyboardRef.current;
+        // Modal Escape is the one exception to editable ownership: Present,
+        // the palette, and a drawer must still close themselves. The title
+        // input preventDefault's its own Escape before this listener.
         if (kb.presenting) {
           event.preventDefault();
           setPresenting(false);
@@ -494,13 +497,23 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         }
         return;
       }
+
       if (editable) {
         return;
       }
-      // Modals and transient owners suppress the registry shortcuts: inline
-      // text editing is editable; open menus, the palette, drawers, and
-      // Present mode own their keys and never let a command fire behind them.
-      const kb = keyboardRef.current;
+
+      // The palette is a shell surface, not a command. Non-editable
+      // targets toggle it except underneath Present or a context menu.
+      if (mod && key === 'k') {
+        event.preventDefault();
+        if (!kb.presenting && !kb.menuOpen) {
+          setPaletteOpen((current) => !current);
+        }
+        return;
+      }
+
+      // Modals and transient owners suppress the registry shortcuts: open
+      // menus, the palette, drawers, and Present mode own their keys.
       if (kb.presenting || kb.paletteOpen || kb.drawer || kb.menuOpen) {
         return;
       }
@@ -546,20 +559,26 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   // --- Render --------------------------------------------------------------------------
 
   return (
-    <main className="editor-app">
+    <TooltipProvider>
+      <main className="editor-app">
       <EditorHeader
         activeDrawer={drawer}
         canExport
         onExport={exportPresentation}
         onOpenDrawer={(kind) => setDrawer((current) => (current === kind ? null : kind))}
         onPresent={startPresent}
+        onRenamePresentation={renamePresentation}
         openCommentCount={openCommentCount}
         pendingAgentChanges={pendingAgentChanges}
         snapshot={snapshot}
         webMcpAvailable={webMcpAvailable}
         workspaceId={workspaceId}
       />
-      <CommandBar ctx={ctx} />
+      <CommandBar
+        ctx={ctx}
+        onPendingShapeGeometryChange={setPendingShapeGeometry}
+        pendingShapeGeometry={pendingShapeGeometry}
+      />
 
       <div className={`editor-main${inspectorOpen && wideViewport ? '' : ' inspector-closed'}`}>
         <SlideRail ctx={ctx} onOpenSlide={openSlide} />
@@ -639,6 +658,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
           {toast}
         </div>
       ) : null}
-    </main>
+      </main>
+    </TooltipProvider>
   );
 }

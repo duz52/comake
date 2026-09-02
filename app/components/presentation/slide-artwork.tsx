@@ -2,7 +2,7 @@ import type { CSSProperties, FocusEvent, KeyboardEvent, MouseEvent, PointerEvent
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import type { PresentationSnapshot } from '../../lib/presentation/store';
 import type { Frame, PresentationElement } from '../../types/presentation';
-import { moveGestureFrame, type GestureState, type ResizeDirection } from './gesture';
+import { elementPreviewFrame, type GestureState, type ResizeDirection } from './gesture';
 import { ShapeSvg } from './shape-svg';
 
 function frameStyle(frame: Frame): CSSProperties {
@@ -12,24 +12,6 @@ function frameStyle(frame: Frame): CSSProperties {
     width: `${(frame.width / SLIDE_WIDTH) * 100}%`,
     height: `${(frame.height / SLIDE_HEIGHT) * 100}%`,
   };
-}
-
-/**
- * The frame to render: for a move gesture, every carried target is recomputed
- * live from its captured origin so the whole selection slides together; the
- * primary element additionally honors its stored preview frame.
- */
-function visibleFrame(element: PresentationElement, gesture: GestureState | null): Frame {
-  if (gesture?.kind === 'move' && gesture.moveTargets) {
-    const target = gesture.moveTargets.find((entry) => entry.id === element.id);
-    if (target) {
-      return moveGestureFrame(target.origin, gesture.originPointer, gesture.pointer);
-    }
-  }
-  if (gesture && gesture.elementId === element.id && gesture.frame) {
-    return gesture.frame;
-  }
-  return element.frame;
 }
 
 function elementStyle(element: PresentationElement, frame: Frame): CSSProperties {
@@ -263,7 +245,7 @@ export function SlideArtwork({
         return (
           <ElementArtwork
             element={element}
-            frame={visibleFrame(element, gesture)}
+            frame={elementPreviewFrame(element, gesture)}
             inlineEditor={editing ? inlineEditor : undefined}
             key={element.id}
             primary={primary}

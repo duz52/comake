@@ -11,14 +11,17 @@ import {
   unknownWorkspaceResponse,
   type WorkspaceActionFailure,
 } from '../lib/server/project-service';
+import { useWorkspaceWebMcp } from '../lib/workspace/webmcp';
 
 /**
  * The workspace home: the persisted project list of the current anonymous
  * session plus the template creation surface. The loader validates the public
- * workspace slug (throwing a real 404 for unknown ids) and lists only this
- * principal's registry metadata. The action strictly validates the creation
- * form, seeds the new project's room through that registry, and redirects
- * into the project's persisted initial slide.
+ * workspace slug (throwing a real 404 for unknown ids) and lists the first
+ * page of this principal's workspace together with the continuation cursor.
+ * The action strictly validates the creation form, creates the project in
+ * that workspace object, and redirects into the project's persisted initial
+ * slide. Workspace WebMCP tools are registered on this page through
+ * `document.modelContext`.
  */
 export async function loader({ context, params }: Route.LoaderArgs) {
   const env = runtimeFrom(context).env;
@@ -27,8 +30,11 @@ export async function loader({ context, params }: Route.LoaderArgs) {
     throw unknownWorkspaceResponse();
   }
   try {
-    const projects = await listWorkspaceProjects(env, principal);
-    return { projects };
+    const listed = await listWorkspaceProjects(env, principal);
+    if (!listed.ok) {
+      throw projectErrorResponse('workspace-loader', listed.detail);
+    }
+    return { projects: listed.projects, nextCursor: listed.nextCursor };
   } catch (error) {
     if (error instanceof Response) {
       throw error;
@@ -73,14 +79,16 @@ export async function action({ context, params, request }: Route.ActionArgs) {
 }
 
 export default function WorkspaceRoute() {
-  const { projects } = useLoaderData<typeof loader>();
+  const { nextCursor, projects } = useLoaderData<typeof loader>();
   const workspaceId = useParams().workspaceId!;
+  useWorkspaceWebMcp(workspaceId);
   const actionData = useActionData<typeof action>();
   const actionFailure: WorkspaceActionFailure | null =
     actionData && !actionData.ok ? actionData.failure : null;
   return (
     <WorkspaceHome
       actionFailure={actionFailure}
+      nextCursor={nextCursor}
       projects={projects}
       workspaceId={workspaceId}
     />

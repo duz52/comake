@@ -3,9 +3,9 @@ import type { AttributionPrincipal } from '../presentation/attribution';
 
 /**
  * Signed anonymous demo session. The Worker verifies or mints one cookie per
- * request; the resulting principal addresses the registry shard and stamps
- * attribution. Session material never leaves this module except as the typed
- * principal (actor id, display name, internal workspace key).
+ * request; the resulting principal addresses the workspace Durable Object
+ * and stamps attribution. Session material never leaves this module except
+ * as the typed principal (actor id, display name, internal workspace key).
  */
 
 export const DEMO_COOKIE_NAME = 'comake_demo_v1';
@@ -19,7 +19,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 export interface DemoPrincipal extends AttributionPrincipal {
-  /** Internal registry shard key; never exposed to the client. */
+  /** Internal workspace shard key; never exposed to the client. */
   workspaceKey: string;
 }
 

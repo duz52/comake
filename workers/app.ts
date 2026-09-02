@@ -45,5 +45,4 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-export { ProjectRoom } from './do/project-room';
-export { ProjectRegistry } from './do/project-registry';
+export { WorkspaceRoom } from './do/workspace-room';

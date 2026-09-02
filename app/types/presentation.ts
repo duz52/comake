@@ -124,6 +124,7 @@ export interface Presentation {
   };
   slideOrder: string[];
   slides: Record<string, Slide>;
+  /** Deck title; mutated only by `update_presentation`. */
   title: string;
 }
 
@@ -186,6 +187,13 @@ export type PresentationOperation =
       notes?: string;
       slideId: string;
       type: 'update_slide';
+    }
+  | {
+      /** Optional optimistic guard: the title read before editing. */
+      expectedTitle?: string;
+      /** The complete replacement presentation title. */
+      title: string;
+      type: 'update_presentation';
     }
   | {
       insertAt?: number;

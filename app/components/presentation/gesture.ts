@@ -2,9 +2,11 @@ import { SLIDE_HEIGHT, SLIDE_WIDTH } from '../../lib/presentation/canvas';
 import type { Frame } from '../../types/presentation';
 
 /**
- * Browser-only gesture geometry. Gesture state is ephemeral preview data: it
- * never enters the canonical model until the single commit on pointer-up.
- * All math runs in canonical slide points (960 x 540, origin top-left).
+ * Browser-only gesture geometry and transaction lifecycle. Preview state
+ * never enters the canonical model; the store stays server-authoritative.
+ * A changed pointer-up keeps the same preview through `committing` until
+ * the atomic frame batch settles. All math runs in canonical slide points
+ * (960 x 540, origin top-left).
  */
 
 /** Useful minimum element size in slide points; existing smaller elements keep their size as the floor. */
@@ -12,6 +14,9 @@ export const MIN_ELEMENT_WIDTH = 24;
 export const MIN_ELEMENT_HEIGHT = 24;
 
 export type GestureKind = 'move' | 'resize';
+
+/** Pointer-owned live preview, or a dropped preview waiting on dispatch. */
+export type GesturePhase = 'tracking' | 'committing';
 
 /** The eight compass resize directions; each is anchored on the opposite edge. */
 export type ResizeDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
@@ -22,6 +27,7 @@ export interface SlidePoint {
 }
 
 export interface GestureState {
+  phase: GesturePhase;
   kind: GestureKind;
   elementId: string;
   elementName: string;
@@ -65,6 +71,60 @@ export function framesEqual(left: Frame, right: Frame): boolean {
     left.width === right.width &&
     left.height === right.height
   );
+}
+
+/** Fields captured while tracking; the owner assigns `phase`. */
+export type GestureTrackingFields = Omit<GestureState, 'phase'>;
+
+/**
+ * The one gesture transaction owner. `null` is idle. `tracking` follows the
+ * pointer. `committing` keeps the dropped preview until dispatch settles.
+ * A second begin, a move, or a cancel cannot replace a committing gesture.
+ */
+export function beginGesture(
+  current: GestureState | null,
+  tracking: GestureTrackingFields,
+): GestureState | null {
+  if (current !== null) {
+    return current;
+  }
+  return { ...tracking, phase: 'tracking' };
+}
+
+export function trackGesture(current: GestureState | null, next: GestureTrackingFields): GestureState | null {
+  if (current === null || current.phase !== 'tracking' || next.pointerId !== current.pointerId) {
+    return current;
+  }
+  return { ...next, phase: 'tracking' };
+}
+
+export function releaseGesture(
+  current: GestureState | null,
+  pointerId: number,
+): { commit: true; gesture: GestureState } | { commit: false; gesture: GestureState | null } {
+  if (current === null || current.phase !== 'tracking' || current.pointerId !== pointerId) {
+    return { commit: false, gesture: current };
+  }
+  const changed =
+    current.origin !== null && current.frame !== null && !framesEqual(current.frame, current.origin);
+  if (!changed) {
+    return { commit: false, gesture: null };
+  }
+  return { commit: true, gesture: { ...current, phase: 'committing' } };
+}
+
+export function cancelGesture(current: GestureState | null, pointerId: number): GestureState | null {
+  if (current === null || current.phase !== 'tracking' || current.pointerId !== pointerId) {
+    return current;
+  }
+  return null;
+}
+
+export function settleGesture(current: GestureState | null): GestureState | null {
+  if (current === null || current.phase !== 'committing') {
+    return current;
+  }
+  return null;
 }
 
 export function clamp(value: number, min: number, max: number): number {
@@ -158,6 +218,44 @@ export function gesturePreviewFrame(
   return kind === 'move'
     ? moveGestureFrame(origin, originPointer, pointer)
     : resizeGestureFrame(origin, pointer, direction ?? 'se');
+}
+
+/**
+ * The frame to render for one element: live or committing move targets are
+ * recomputed from captured origins; a resize preview uses the stored frame.
+ * Without a gesture the canonical frame is shown.
+ */
+export function elementPreviewFrame(
+  element: { id: string; frame: Frame },
+  gesture: GestureState | null,
+): Frame {
+  if (gesture?.kind === 'move' && gesture.moveTargets) {
+    const target = gesture.moveTargets.find((entry) => entry.id === element.id);
+    if (target) {
+      return moveGestureFrame(target.origin, gesture.originPointer, gesture.pointer);
+    }
+  }
+  if (gesture && gesture.elementId === element.id && gesture.frame) {
+    return gesture.frame;
+  }
+  return element.frame;
+}
+
+/** Canonical frame writes implied by a captured gesture; empty when there is no preview yet. */
+export function gestureCommitTargets(
+  gesture: GestureState,
+): ReadonlyArray<{ elementId: string; expected: Frame; next: Frame }> {
+  if (!gesture.origin || !gesture.frame) {
+    return [];
+  }
+  if (gesture.kind === 'move' && gesture.moveTargets) {
+    return gesture.moveTargets.map((target) => ({
+      elementId: target.id,
+      expected: target.origin,
+      next: gesturePreviewFrame('move', target.origin, gesture.originPointer, gesture.pointer),
+    }));
+  }
+  return [{ elementId: gesture.elementId, expected: gesture.origin, next: gesture.frame }];
 }
 
 /**

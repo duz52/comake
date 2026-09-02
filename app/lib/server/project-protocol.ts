@@ -4,7 +4,7 @@ import type {
   DispatchResult,
   PresentationDocument,
 } from '../presentation/document';
-import { isRecord, parseOperation, type ParseResult } from '../presentation/operations';
+import { isRecord, parseOperation, parsePresentationTitle, type ParseResult } from '../presentation/operations';
 
 /**
  * The pure HTTP contract of the canonical project API: strict parsing of the
@@ -24,14 +24,13 @@ export const PRIVATE_NO_STORE = 'private, no-store';
 /** The one workspace creation intent the creation form accepts. */
 export const CREATE_PROJECT_INTENT = 'create-project';
 
-/** Hard upper bound of a project title, enforced at the form boundary. */
-export const MAX_PROJECT_TITLE_LENGTH = 100;
+export { MAX_PRESENTATION_TITLE_LENGTH } from '../presentation/document';
 
 function jsonHeaders(): HeadersInit {
   return { 'Cache-Control': PRIVATE_NO_STORE };
 }
 
-/** A strictly validated project-creation form; `value` is ready for the registry. */
+/** A strictly validated project-creation form; `value` is ready for WorkspaceRoom. */
 export type CreateProjectFormResult =
   | { ok: true; value: { templateId: string; title?: string } }
   | { ok: false; detail: string };
@@ -65,13 +64,14 @@ export function parseCreateProjectForm(form: FormData): CreateProjectFormResult 
     if (typeof titleInput !== 'string') {
       return { ok: false, detail: 'The presentation title must be text.' };
     }
-    title = titleInput.trim();
-    if (title.length === 0) {
+    if (titleInput.trim().length === 0) {
       title = undefined;
-    } else if (title.length > MAX_PROJECT_TITLE_LENGTH) {
-      return { ok: false, detail: `The presentation title can be ${MAX_PROJECT_TITLE_LENGTH} characters at most.` };
-    } else if (/[\u0000-\u001f\u007f]/.test(title)) {
-      return { ok: false, detail: 'The presentation title cannot contain control characters.' };
+    } else {
+      const parsedTitle = parsePresentationTitle(titleInput, 'The presentation title');
+      if (!parsedTitle.ok) {
+        return { ok: false, detail: parsedTitle.detail };
+      }
+      title = parsedTitle.value;
     }
   }
   const value: { templateId: string; title?: string } = { templateId };

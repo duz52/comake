@@ -271,8 +271,49 @@ select:focus-visible,
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.hdr-title-button {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.hdr-title-button:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.hdr-title-input {
+  min-width: 8ch;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+}
+
+.hdr-title-input:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 0;
+  border-color: var(--accent-line);
 }
 
 .hdr-actions {
@@ -281,8 +322,15 @@ select:focus-visible,
   gap: 6px;
   margin-left: auto;
   min-width: 0;
-  /* The action row scrolls internally instead of widening the document. */
   overflow-x: auto;
+}
+
+.hdr-review-inline {
+  display: contents;
+}
+
+.hdr-review {
+  display: none;
 }
 
 .hchip {
@@ -370,8 +418,6 @@ select:focus-visible,
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   white-space: nowrap;
-  /* The command surface scrolls internally instead of widening the document. */
-  overflow-x: auto;
 }
 
 .cmd-group {
@@ -466,6 +512,48 @@ select:focus-visible,
   background: var(--text-primary);
   color: var(--surface-raised);
   font-weight: 600;
+}
+
+.tool-split {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.tool-split .tool-seg {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  padding-right: 7px;
+}
+
+.tool-seg-chevron {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0 5px 5px 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tool-seg-chevron:hover {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-primary);
+}
+
+.tool-split:has(.tool-seg[aria-checked='true']) .tool-seg-chevron {
+  background: var(--text-primary);
+  color: var(--surface-raised);
+}
+
+.tool-seg-chevron[data-popup-open],
+.tool-split:has(.tool-seg[aria-checked='true']) .tool-seg-chevron[data-popup-open] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
 .cmd-label {
@@ -902,6 +990,26 @@ select:focus-visible,
   cursor: crosshair;
 }
 
+.selection-bar {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 2px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
+  max-width: calc(100% - 16px);
+  user-select: none;
+}
+
+.selection-bar .cmd-divider {
+  height: 16px;
+}
+
 /* The command bar ⋯ overflow menu; the same chrome as the context menus.
  * Stacking is owned by its `.popup-positioner`. */
 .bar-menu {
@@ -957,6 +1065,11 @@ select:focus-visible,
   color: var(--danger-text);
 }
 
+.bar-menu-item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
 .bar-menu-icon {
   flex: none;
   width: 14px;
@@ -987,6 +1100,24 @@ select:focus-visible,
  */
 .popup-positioner {
   z-index: 70;
+}
+
+.tooltip-hit-area {
+  display: inline-flex;
+}
+
+.chrome-tooltip {
+  box-sizing: border-box;
+  max-width: 240px;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.35;
+  outline: none;
 }
 
 /* --- Canvas context menu ------------------------------------------------------------ */
@@ -2319,6 +2450,14 @@ select:focus-visible,
   list-style: none;
 }
 
+.ws-load-more {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .ws-project-row {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) auto auto auto;
@@ -2409,13 +2548,23 @@ select:focus-visible,
   font-family: Inter, sans-serif;
 }
 
-/* --- Responsive: narrow viewports drop the header status chips ----------------------- */
-/* The header keeps every action in its scrollable action strip; the chips are the first
- * surface to shed because the revision/WebMCP status is the least time-critical fact. */
+/* --- Responsive: header chips, then Review overflow -------------------------------- */
+/* Chips hide first. Below 900px Agent / Comments / Activity fold into Review so
+ * Present and Export stay on one row. */
 
 @media (max-width: 1120px) {
   .hchip {
     display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .hdr-review-inline {
+    display: none;
+  }
+
+  .hdr-review {
+    display: flex;
   }
 }
 
@@ -2426,8 +2575,8 @@ select:focus-visible,
  * horizontal filmstrip (one thumbnail per slide, the same per-slide menus, the
  * same Add slide action) so the canvas owns the full width and stays the
  * dominant working surface; the status bar compacts to one priority line; the
- * command bar keeps its width-tier planner, which already moves contextual
- * clusters into the ⋯ overflow menu instead of clipping. Every desktop surface
+ * command bar keeps its width-tier planner, which already sheds the inspector
+ * toggle below 1200px. Object commands sit on the selection action bar. Every desktop surface
  * stays present — nothing is hidden by overflow, nothing loses its action.
  */
 @media (max-width: 720px) {
@@ -2498,6 +2647,7 @@ select:focus-visible,
   .command-bar,
   .slide-rail,
   .rail-scroll {
+    overflow-x: auto;
     scrollbar-width: none;
   }
 

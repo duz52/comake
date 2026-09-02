@@ -1,13 +1,31 @@
 import { Tooltip as TooltipPrimitive } from '@base-ui/react/tooltip';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
-export function Tooltip({ content, children }: { content: string; children: ReactElement }) {
+/** Shared delay so adjacent chrome tooltips open instantly after the first. */
+export function TooltipProvider({ children }: { children: ReactNode }) {
+  return <TooltipPrimitive.Provider delay={400}>{children}</TooltipPrimitive.Provider>;
+}
+
+export function Tooltip({
+  content,
+  children,
+  wrapDisabled,
+}: {
+  content: string;
+  children: ReactElement;
+  /**
+   * Native disabled buttons do not fire hover or focus. Wrap them so the
+   * tooltip still explains why the control is unavailable.
+   */
+  wrapDisabled?: boolean;
+}) {
+  const trigger = wrapDisabled ? <span className="tooltip-hit-area">{children}</span> : children;
   return (
     <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger render={children} />
+      <TooltipPrimitive.Trigger render={trigger} />
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner className="popup-positioner" sideOffset={8}>
-          <TooltipPrimitive.Popup className="rounded-md border border-line bg-surface-raised px-2 py-1 text-[10px] text-secondary shadow-xl outline-none transition data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0">
+          <TooltipPrimitive.Popup className="chrome-tooltip">
             {content}
           </TooltipPrimitive.Popup>
         </TooltipPrimitive.Positioner>

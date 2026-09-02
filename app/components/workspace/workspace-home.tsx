@@ -1,10 +1,15 @@
-import { useMemo } from 'react';
-import { Form, Link, useNavigation } from 'react-router';
-import { presentationSlidePath, workspacePath } from '../../lib/presentation/location';
-import { CREATE_PROJECT_INTENT, MAX_PROJECT_TITLE_LENGTH } from '../../lib/server/project-protocol';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Form, Link, useFetcher, useNavigation } from 'react-router';
+import { workspacePath } from '../../lib/presentation/location';
+import { CREATE_PROJECT_INTENT, MAX_PRESENTATION_TITLE_LENGTH } from '../../lib/server/project-protocol';
 import type { PresentationSnapshot } from '../../lib/presentation/store';
 import type { PresentationTemplate } from '../../lib/presentation/template';
 import { blankTemplate, findTemplate, listGalleryTemplates } from '../../lib/presentation/templates';
+import {
+  isWorkspaceContextSuccess,
+  listedWorkspaceProject,
+  workspaceApiPath,
+} from '../../lib/workspace/protocol';
 import { SlideArtwork } from '../presentation/slide-artwork';
 import { ThemeToggle } from '../theme-toggle';
 import type { WorkspaceActionFailure, WorkspaceProject } from '../../lib/server/project-service';
@@ -23,6 +28,14 @@ const UTC_DATE_FORMATTER = new Intl.DateTimeFormat('en', {
 
 function formatUtcDate(iso: string): string {
   return UTC_DATE_FORMATTER.format(new Date(iso));
+}
+
+/** Truthful list count: a continuation cursor means this is not the total. */
+function projectCountLabel(count: number, hasMore: boolean): string {
+  if (hasMore) {
+    return `${count}+ projects`;
+  }
+  return count === 1 ? '1 project' : `${count} projects`;
 }
 
 /** A non-interactive snapshot of one template, rendered by the real slide artwork. */
@@ -86,10 +99,12 @@ function CreationError({ failure }: { failure: WorkspaceActionFailure | null }) 
  */
 export function WorkspaceHome({
   actionFailure,
+  nextCursor,
   projects,
   workspaceId,
 }: {
   actionFailure: WorkspaceActionFailure | null;
+  nextCursor: string | null;
   projects: WorkspaceProject[];
   workspaceId: string;
 }) {
@@ -100,6 +115,52 @@ export function WorkspaceHome({
     navigation.state === 'submitting' && navigation.formData?.get('intent') === CREATE_PROJECT_INTENT;
   const submittingTemplateId = creating ? String(navigation.formData?.get('templateId') ?? '') : '';
   const submittingBlank = submittingTemplateId === blankTemplate.id;
+
+  const listedSeed = useMemo(
+    () => projects.map((project) => listedWorkspaceProject(workspaceId, project)),
+    [projects, workspaceId],
+  );
+  const [visibleProjects, setVisibleProjects] = useState(listedSeed);
+  const [listCursor, setListCursor] = useState(nextCursor);
+  const [listFailed, setListFailed] = useState(false);
+  const fetcher = useFetcher();
+  const fetcherDataRef = useRef(fetcher.data);
+  fetcherDataRef.current = fetcher.data;
+  const consumedFetcherDataRef = useRef<unknown>(undefined);
+
+  useEffect(() => {
+    setVisibleProjects(listedSeed);
+    setListCursor(nextCursor);
+    setListFailed(false);
+    consumedFetcherDataRef.current = fetcherDataRef.current;
+  }, [listedSeed, nextCursor]);
+
+  useEffect(() => {
+    if (fetcher.state !== 'idle' || fetcher.data === undefined) {
+      return;
+    }
+    if (consumedFetcherDataRef.current === fetcher.data) {
+      return;
+    }
+    consumedFetcherDataRef.current = fetcher.data;
+    if (isWorkspaceContextSuccess(fetcher.data, workspaceId)) {
+      const page = fetcher.data;
+      setVisibleProjects((current) => [...current, ...page.projects]);
+      setListCursor(page.nextCursor);
+      setListFailed(false);
+      return;
+    }
+    setListFailed(true);
+  }, [fetcher.data, fetcher.state]);
+
+  const loadingMore = fetcher.state !== 'idle';
+
+  function loadNextPage(): void {
+    if (listCursor === null || loadingMore) {
+      return;
+    }
+    fetcher.load(workspaceApiPath(workspaceId, { cursor: listCursor }));
+  }
 
   const blankFailure =
     actionFailure &&
@@ -176,10 +237,10 @@ export function WorkspaceHome({
                 Recent presentations
               </h2>
               <span className="ws-section-meta">
-                {projects.length === 1 ? '1 project' : `${projects.length} projects`}
+                {projectCountLabel(visibleProjects.length, listCursor !== null)}
               </span>
             </div>
-            {projects.length === 0 ? (
+            {visibleProjects.length === 0 ? (
               <div className="ws-empty">
                 <p className="ws-empty-title">No presentations yet</p>
                 <p className="ws-empty-body">
@@ -193,30 +254,47 @@ export function WorkspaceHome({
                 <CreationError failure={blankFailure ? actionFailure : null} />
               </div>
             ) : (
-              <ul className="ws-project-list">
-                {projects.map((project) => (
-                  <li key={project.id}>
-                    <Link
-                      className="ws-project-row"
-                      to={presentationSlidePath(workspaceId, project.id, project.initialSlideId)}
+              <>
+                <ul className="ws-project-list">
+                  {visibleProjects.map((project) => (
+                    <li key={project.id}>
+                      <Link className="ws-project-row" to={project.editorUrl}>
+                        <span className="ws-project-title">{project.title}</span>
+                        <span className="ws-project-template">
+                          {findTemplate(project.templateId)?.title ?? project.templateId}
+                        </span>
+                        <time className="ws-project-date ws-project-created" dateTime={project.createdAt}>
+                          Created {formatUtcDate(project.createdAt)}
+                        </time>
+                        <time className="ws-project-date ws-project-edited" dateTime={project.updatedAt}>
+                          Edited {formatUtcDate(project.updatedAt)}
+                        </time>
+                        <span aria-hidden="true" className="ws-project-open">
+                          Open
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+                {listCursor !== null ? (
+                  <div className="ws-load-more">
+                    <button
+                      aria-busy={loadingMore}
+                      className="hbutton"
+                      disabled={loadingMore}
+                      onClick={loadNextPage}
+                      type="button"
                     >
-                      <span className="ws-project-title">{project.title}</span>
-                      <span className="ws-project-template">
-                        {findTemplate(project.templateId)?.title ?? project.templateId}
-                      </span>
-                      <time className="ws-project-date ws-project-created" dateTime={project.createdAt}>
-                        Created {formatUtcDate(project.createdAt)}
-                      </time>
-                      <time className="ws-project-date ws-project-edited" dateTime={project.updatedAt}>
-                        Edited {formatUtcDate(project.updatedAt)}
-                      </time>
-                      <span aria-hidden="true" className="ws-project-open">
-                        Open
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+                      {loadingMore ? 'Loading...' : listFailed ? 'Retry' : 'Load more'}
+                    </button>
+                    {listFailed && !loadingMore ? (
+                      <p className="ws-form-error" role="alert">
+                        The next page could not be loaded. Please try again.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
             )}
           </section>
         </div>
@@ -265,7 +343,7 @@ function TemplateCard({
           className="ws-title-input"
           disabled={creating}
           id={titleFieldId}
-          maxLength={MAX_PROJECT_TITLE_LENGTH}
+          maxLength={MAX_PRESENTATION_TITLE_LENGTH}
           name="title"
           type="text"
         />

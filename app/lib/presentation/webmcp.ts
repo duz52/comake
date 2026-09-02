@@ -10,7 +10,7 @@ import { downloadPptx } from './pptx-download';
 import { DEMO_DISPLAY_NAME } from './actors';
 import { slideTitleText, type DispatchFailure } from './document';
 import { PresentationStore, type PresentationSnapshot, type TransportFailure } from './store';
-import { startWebMcpRegistration, type ModelContext, type RegisteredTool } from './webmcp-registration';
+import { startWebMcpRegistration, type RegisteredTool } from './webmcp-registration';
 import type { ChangeSet, Frame, Presentation, Slide } from '../../types/presentation';
 
 /**
@@ -28,12 +28,6 @@ type ToolFailureCode =
   | 'STALE_REVISION'
   | 'TRANSPORT_ERROR'
   | 'UNSUPPORTED';
-
-declare global {
-  interface Document {
-    modelContext?: ModelContext;
-  }
-}
 
 /** Bounded changeset window; the store's own history is larger and stays internal. */
 const CHANGESET_READ_LIMIT = 12;
@@ -454,7 +448,7 @@ export function useWebMcp(store: PresentationStore): boolean {
       {
         name: 'apply_presentation_operations',
         description:
-          'Apply one atomic, attributed set of presentation operations: update_text, update_text_style (complete replacement text style), update_frame, update_shape_style (complete replacement shape style: geometry, fill, and stroke), update_element_order (an exact permutation of one slide\'s element ids), update_slide (complete replacement slide name/background/notes), create_slide, delete_slide, create_element, delete_element, add_comment, remove_comment, or resolve_comment. Every write must supply baseRevision, the revision you last read; if the presentation has advanced past it or any operation is invalid, the whole set is rejected and nothing is partially applied. Reference slides, elements, and comments by their stable ids exactly as the read tools returned them. To add a slide, use create_slide with the complete slide shape and an optional zero-based insertAt in the current slide order (0 inserts before the first slide; omission appends at the end), then create its elements with create_element operations in the same set, targeting the new slide\'s stable id — a new slide and its elements are created atomically. To add an element, use create_element with the complete element shape and an optional zero-based insertAt in the slide\'s element order (0 inserts behind everything; omission appends at the top). To delete a slide, use delete_slide by its stable id; the final slide can never be deleted; if the slide has comments, issue their remove_comment operations before delete_slide in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. To delete an element, use delete_element by its stable slide and element ids; if the element has comments attached to it, issue their remove_comment operations before delete_element in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. Element frames must fit inside the canonical presentation bounds, and colors must be strict #RRGGBB hex values. Echo element and comment shapes exactly as read_presentation_slide returned them.',
+          'Apply one atomic, attributed set of presentation operations: update_text, update_text_style (complete replacement text style), update_frame, update_shape_style (complete replacement shape style: geometry, fill, and stroke), update_element_order (an exact permutation of one slide\'s element ids), update_slide (complete replacement slide name/background/notes), update_presentation (complete replacement presentation title), create_slide, delete_slide, create_element, delete_element, add_comment, remove_comment, or resolve_comment. Every write must supply baseRevision, the revision you last read; if the presentation has advanced past it or any operation is invalid, the whole set is rejected and nothing is partially applied. Reference slides, elements, and comments by their stable ids exactly as the read tools returned them. To rename the presentation, use update_presentation with the complete replacement title and an optional expectedTitle guard. To add a slide, use create_slide with the complete slide shape and an optional zero-based insertAt in the current slide order (0 inserts before the first slide; omission appends at the end), then create its elements with create_element operations in the same set, targeting the new slide\'s stable id — a new slide and its elements are created atomically. To add an element, use create_element with the complete element shape and an optional zero-based insertAt in the slide\'s element order (0 inserts behind everything; omission appends at the top). To delete a slide, use delete_slide by its stable id; the final slide can never be deleted; if the slide has comments, issue their remove_comment operations before delete_slide in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. To delete an element, use delete_element by its stable slide and element ids; if the element has comments attached to it, issue their remove_comment operations before delete_element in the same atomic batch, which preserves canonical integrity and keeps the changeset reversible. Element frames must fit inside the canonical presentation bounds, and colors must be strict #RRGGBB hex values. Echo element and comment shapes exactly as read_presentation_slide returned them.',
         inputSchema: presentationWriteInputSchema,
         execute: async (input) => {
           const parsed = parseWriteInput(input);

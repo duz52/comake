@@ -7,19 +7,19 @@ import {
   jsonInternalErrorResponse,
   jsonNotFound,
 } from './project-protocol';
-import type { ProjectRecord } from '../../../workers/do/project-registry';
+import type { WorkspaceListResult, WorkspaceProjectRecord } from '../../../workers/do/workspace-store';
 
 /**
  * Server-only service boundary between React Router loaders/actions/resource
- * routes and the project Durable Objects. Routes resolve bindings through
- * these helpers and receive domain outcomes as typed values; unexpected
- * failures are logged here with full server context and answered with a
- * neutral client error (AGENTS.md Rule 2).
+ * routes and the one workspace Durable Object. Routes resolve bindings
+ * through these helpers and receive domain outcomes as typed values;
+ * unexpected failures are logged here with full server context and answered
+ * with a neutral client error (AGENTS.md Rule 2).
  *
- * The registry is addressed only from the verified principal's workspace key
- * (`PROJECT_REGISTRY.getByName`). The public workspace slug is never used to
- * select a shard. A ProjectRoom is reached only after that registry resolves
- * the project as owned.
+ * The workspace is addressed only from the verified principal's workspace key
+ * (`WORKSPACE_ROOM.getByName`). The public workspace slug is never used to
+ * select a shard. Resolve, read, create, and dispatch all call that same
+ * object.
  *
  * TERMINAL RESPONSE RULE: every terminal outcome below is a plain `Response`.
  * UI route loaders and actions `throw` them, so React Router serves the real
@@ -30,37 +30,18 @@ import type { ProjectRecord } from '../../../workers/do/project-registry';
  */
 
 /** Client-safe project metadata: no workspace key or storage identity. */
-export type WorkspaceProject = {
-  createdAt: string;
-  id: string;
-  initialSlideId: string;
-  templateId: string;
-  title: string;
-  updatedAt: string;
-};
+export type WorkspaceProject = WorkspaceProjectRecord;
 
-function toWorkspaceProject(record: ProjectRecord): WorkspaceProject {
-  return {
-    createdAt: record.createdAt,
-    id: record.id,
-    initialSlideId: record.initialSlideId,
-    templateId: record.templateId,
-    title: record.title,
-    updatedAt: record.updatedAt,
-  };
+function workspaceRoom(env: Env, principal: DemoPrincipal) {
+  return env.WORKSPACE_ROOM.getByName(principal.workspaceKey);
 }
 
-function projectRegistry(env: Env, principal: DemoPrincipal) {
-  return env.PROJECT_REGISTRY.getByName(principal.workspaceKey);
-}
-
-function ownedRoom(env: Env, projectId: string) {
-  return env.PROJECT_ROOM.getByName(projectId);
-}
-
-export async function listWorkspaceProjects(env: Env, principal: DemoPrincipal): Promise<WorkspaceProject[]> {
-  const records = await projectRegistry(env, principal).list();
-  return records.map(toWorkspaceProject);
+export async function listWorkspaceProjects(
+  env: Env,
+  principal: DemoPrincipal,
+  cursor?: string,
+): Promise<WorkspaceListResult> {
+  return workspaceRoom(env, principal).list(cursor);
 }
 
 export async function resolveOwnedProject(
@@ -68,8 +49,7 @@ export async function resolveOwnedProject(
   principal: DemoPrincipal,
   projectId: string,
 ): Promise<WorkspaceProject | null> {
-  const record = await projectRegistry(env, principal).resolve(projectId);
-  return record ? toWorkspaceProject(record) : null;
+  return workspaceRoom(env, principal).resolve(projectId);
 }
 
 export type CreateProjectResult =
@@ -84,9 +64,10 @@ export type WorkspaceActionFailure = {
 };
 
 /**
- * Create one project from a template in the principal's registry. The
- * registry DO seeds the room before exposing the record; unexpected
- * failures propagate to the caller's error boundary handling.
+ * Create one project from a template in the principal's workspace. The
+ * workspace object inserts the canonical document and listing metadata in
+ * one statement; unexpected failures propagate to the caller's error
+ * boundary handling.
  */
 export async function createProjectFromTemplate(
   env: Env,
@@ -103,8 +84,8 @@ export async function createProjectFromTemplate(
       },
     };
   }
-  const project = await projectRegistry(env, principal).create(input);
-  return { ok: true, project: toWorkspaceProject(project) };
+  const project = await workspaceRoom(env, principal).create(input);
+  return { ok: true, project };
 }
 
 /**
@@ -116,17 +97,17 @@ export async function readOwnedProjectDocument(
   principal: DemoPrincipal,
   projectId: string,
 ): Promise<PresentationDocument | null> {
-  const project = await resolveOwnedProject(env, principal, projectId);
-  if (!project) {
-    return null;
-  }
-  return ownedRoom(env, project.id).readDocument();
+  return workspaceRoom(env, principal).readDocument(projectId);
 }
 
 /**
  * One canonical dispatch against an owned project. Kernel rejections
  * (including `STALE_REVISION`) come back as the structured failure — never
  * retried here. `null` means the principal does not own the project.
+ *
+ * Accepted document JSON and listing `updated_at` are written in the same
+ * WorkspaceRoom transaction. There is no second owner and no post-dispatch
+ * RPC.
  */
 export async function dispatchOwnedProject(
   env: Env,
@@ -134,15 +115,11 @@ export async function dispatchOwnedProject(
   projectId: string,
   request: ClientDispatchRequest,
 ): Promise<DispatchResult | null> {
-  const project = await resolveOwnedProject(env, principal, projectId);
-  if (!project) {
-    return null;
-  }
   const canonical = canonicalDispatchRequest(principal, request);
   if (!canonical.ok) {
     return { ok: false, failure: { code: 'INVALID_INPUT', detail: canonical.detail } };
   }
-  return ownedRoom(env, project.id).dispatch(canonical.value);
+  return workspaceRoom(env, principal).dispatch(projectId, canonical.value);
 }
 
 /**

@@ -77,9 +77,12 @@ export type CommandGroup =
   | 'panels';
 
 /** The surfaces a command may appear on. */
-export type CommandSurface = 'bar' | 'menu' | 'slide-menu' | 'palette' | 'keys';
+export type CommandSurface = 'bar' | 'selection' | 'menu' | 'slide-menu' | 'palette' | 'keys';
 
-/** The command bar's visual clusters; the overflow planner sheds clusters by tier. */
+/**
+ * Visual clusters shared by the session bar and the selection action bar.
+ * Session bar: history, tools, zoom, inspector. Selection bar: edit, order, align, text.
+ */
 export type BarCluster = 'history' | 'tools' | 'edit' | 'order' | 'align' | 'text' | 'zoom' | 'inspector';
 
 export type ShortcutKey =
@@ -216,7 +219,7 @@ export interface CommandDescriptor {
   icon: CommandIconId;
   /** The surfaces this command may appear on. */
   surfaces: readonly CommandSurface[];
-  /** The command bar cluster; only bar-surface commands use it. */
+  /** Cluster for the session bar or the selection action bar. */
   barCluster?: BarCluster;
   shortcut?: Shortcut;
   /** Destructive styling everywhere (toolbar, menus, palette). */
@@ -437,12 +440,11 @@ export interface ToolbarPlan {
 }
 
 /**
- * Deterministic width-tier layout for the command bar: the persistent core
- * (history, tools, selection-critical Duplicate/Delete, zoom) never moves;
- * the contextual clusters shed into the ⋯ overflow menu as the width falls —
- * Text first (below 1280), the Inspector (below 1200, the same threshold
- * that decides whether the panel can render at all), then Align (below
- * 1160), then Order (below 1120). Never clips horizontally.
+ * Deterministic width-tier layout for the session bar. History, tools, and
+ * zoom stay inline at every width. The inspector toggle sheds below
+ * `INSPECTOR_MIN_VIEWPORT` (the same threshold that decides whether the
+ * panel can render). Object clusters (edit/order/align/text) belong on the
+ * selection surface, not this planner.
  */
 export function planToolbarLayout(width: number, visible: readonly CommandListItem[]): ToolbarPlan {
   const inline: CommandListItem[] = [];
@@ -463,44 +465,35 @@ export function planToolbarLayout(width: number, visible: readonly CommandListIt
 export const INSPECTOR_MIN_VIEWPORT = 1200;
 
 function clusterStaysInline(cluster: BarCluster | undefined, width: number): boolean {
-  switch (cluster) {
-    case 'text':
-      return width >= 1280;
-    case 'inspector':
-      return width >= INSPECTOR_MIN_VIEWPORT;
-    case 'align':
-      return width >= 1160;
-    case 'order':
-      return width >= 1120;
-    default:
-      // history, tools, edit (Duplicate/Delete), and zoom are the persistent core.
-      return true;
-  }
+  return cluster === 'inspector' ? width >= INSPECTOR_MIN_VIEWPORT : true;
 }
 
 // --- Tooltip text ------------------------------------------------------------------
 
-/** `Label (⌘D)` for enabled commands, `Label (⌘Z) — reason` for the policy set. */
+/** `Label (⌘D)` for enabled commands, `Label (⌘Z) - reason` for the policy set. */
 export function commandTooltip(command: CommandDescriptor, ctx: CommandContext, state: CommandState, platform: 'mac' | 'other'): string {
   const shortcut = command.shortcut ? ` (${formatShortcut(command.shortcut, platform)})` : '';
   const reason = state === 'disabled' ? command.disabledReason?.(ctx) : undefined;
-  return reason !== undefined ? `${command.label}${shortcut} — ${reason}` : `${command.label}${shortcut}`;
+  return reason !== undefined ? `${command.label}${shortcut} - ${reason}` : `${command.label}${shortcut}`;
 }
 
 // --- Surface projection ---------------------------------------------------------------
 
 /**
- * The one way surfaces read the registry. `toolbar` returns visible commands
- * only (inapplicable commands vanish instead of forming a disabled wall);
- * `menu`/`slide-menu` do the same with the open target applied; `palette`
- * returns every palette command regardless of visibility (a search surface)
- * and expresses inapplicability as the disabled state.
+ * The one way surfaces read the registry. `bar` and `selection` return
+ * visible commands only (inapplicable commands vanish instead of forming a
+ * disabled wall); `menu`/`slide-menu` do the same with the open target
+ * applied; `palette` returns every palette command regardless of visibility
+ * (a search surface) and expresses inapplicability as the disabled state.
  */
 export function commandsForSurface(ctx: CommandContext, surface: CommandSurface): readonly CommandListItem[] {
   let commands: readonly CommandDescriptor[];
   switch (surface) {
     case 'bar':
       commands = COMMANDS.filter((command) => command.surfaces.includes('bar') && command.visibleWhen(ctx));
+      break;
+    case 'selection':
+      commands = COMMANDS.filter((command) => command.surfaces.includes('selection') && command.visibleWhen(ctx));
       break;
     case 'menu':
       commands = COMMANDS.filter(
@@ -518,8 +511,6 @@ export function commandsForSurface(ctx: CommandContext, surface: CommandSurface)
       // set, never a shadow list behind a modal or an editable surface.
       commands = COMMANDS.filter((command) => command.surfaces.includes('keys') && command.visibleWhen(ctx));
       break;
-    default:
-      commands = [];
   }
   return commands.map((command) => ({ ...command, state: command.enabledWhen(ctx) ? 'enabled' : 'disabled' }));
 }
@@ -564,7 +555,7 @@ const TOOL_COMMANDS: readonly CommandDescriptor[] = [
   {
     id: 'tool.shape',
     label: 'Shape tool',
-    keywords: 'rectangle box add',
+    keywords: 'rectangle ellipse triangle diamond box add',
     group: 'tools',
     icon: 'shape',
     surfaces: ['bar', 'palette', 'keys'],
@@ -612,7 +603,7 @@ const EDIT_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'copy',
     group: 'edit',
     icon: 'copy',
-    surfaces: ['bar', 'menu', 'palette', 'keys'],
+    surfaces: ['selection', 'menu', 'palette', 'keys'],
     barCluster: 'edit',
     menuTarget: 'element',
     shortcut: { keys: ['mod', 'd'] },
@@ -626,7 +617,7 @@ const EDIT_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'remove trash',
     group: 'edit',
     icon: 'trash',
-    surfaces: ['bar', 'menu', 'palette', 'keys'],
+    surfaces: ['selection', 'menu', 'palette', 'keys'],
     barCluster: 'edit',
     menuTarget: 'element',
     dangerous: true,
@@ -706,7 +697,7 @@ const ARRANGE_ORDER_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'order front z',
     group: 'arrange',
     icon: 'order-front',
-    surfaces: ['bar', 'menu', 'palette', 'keys'],
+    surfaces: ['selection', 'menu', 'palette', 'keys'],
     barCluster: 'order',
     menuTarget: 'element',
     menuSeparatorBefore: true,
@@ -721,7 +712,7 @@ const ARRANGE_ORDER_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'order forward z',
     group: 'arrange',
     icon: 'order-forward',
-    surfaces: ['bar', 'menu', 'palette', 'keys'],
+    surfaces: ['selection', 'menu', 'palette', 'keys'],
     barCluster: 'order',
     menuTarget: 'element',
     shortcut: { keys: ['mod', ']'] },
@@ -735,7 +726,7 @@ const ARRANGE_ORDER_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'order backward z',
     group: 'arrange',
     icon: 'order-backward',
-    surfaces: ['bar', 'menu', 'palette', 'keys'],
+    surfaces: ['selection', 'menu', 'palette', 'keys'],
     barCluster: 'order',
     menuTarget: 'element',
     shortcut: { keys: ['mod', '['] },
@@ -749,7 +740,7 @@ const ARRANGE_ORDER_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'order back z',
     group: 'arrange',
     icon: 'order-back',
-    surfaces: ['bar', 'menu', 'palette', 'keys'],
+    surfaces: ['selection', 'menu', 'palette', 'keys'],
     barCluster: 'order',
     menuTarget: 'element',
     shortcut: { keys: ['mod', 'shift', '['] },
@@ -766,7 +757,7 @@ const ARRANGE_ALIGN_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'align left edge',
     group: 'arrange',
     icon: 'align-left',
-    surfaces: ['bar', 'menu', 'palette'],
+    surfaces: ['selection', 'menu', 'palette'],
     barCluster: 'align',
     menuTarget: 'element',
     menuSeparatorBefore: true,
@@ -782,7 +773,7 @@ const ARRANGE_ALIGN_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'align center horizontal',
     group: 'arrange',
     icon: 'align-centerh',
-    surfaces: ['bar', 'menu', 'palette'],
+    surfaces: ['selection', 'menu', 'palette'],
     barCluster: 'align',
     menuTarget: 'element',
     visibleWhen: (ctx) => ctx.selection.canAlign,
@@ -796,7 +787,7 @@ const ARRANGE_ALIGN_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'align right edge',
     group: 'arrange',
     icon: 'align-right',
-    surfaces: ['bar', 'menu', 'palette'],
+    surfaces: ['selection', 'menu', 'palette'],
     barCluster: 'align',
     menuTarget: 'element',
     visibleWhen: (ctx) => ctx.selection.canAlign,
@@ -810,7 +801,7 @@ const ARRANGE_ALIGN_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'align top edge',
     group: 'arrange',
     icon: 'align-top',
-    surfaces: ['bar', 'menu', 'palette'],
+    surfaces: ['selection', 'menu', 'palette'],
     barCluster: 'align',
     menuTarget: 'element',
     visibleWhen: (ctx) => ctx.selection.canAlign,
@@ -824,7 +815,7 @@ const ARRANGE_ALIGN_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'align center vertical',
     group: 'arrange',
     icon: 'align-centerv',
-    surfaces: ['bar', 'menu', 'palette'],
+    surfaces: ['selection', 'menu', 'palette'],
     barCluster: 'align',
     menuTarget: 'element',
     visibleWhen: (ctx) => ctx.selection.canAlign,
@@ -838,7 +829,7 @@ const ARRANGE_ALIGN_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'align bottom edge',
     group: 'arrange',
     icon: 'align-bottom',
-    surfaces: ['bar', 'menu', 'palette'],
+    surfaces: ['selection', 'menu', 'palette'],
     barCluster: 'align',
     menuTarget: 'element',
     visibleWhen: (ctx) => ctx.selection.canAlign,
@@ -854,7 +845,7 @@ const TEXT_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'bold weight',
     group: 'text',
     icon: 'bold',
-    surfaces: ['bar', 'palette', 'keys'],
+    surfaces: ['selection', 'palette', 'keys'],
     barCluster: 'text',
     shortcut: { keys: ['mod', 'b'] },
     visibleWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,
@@ -877,7 +868,7 @@ const TEXT_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'text align left',
     group: 'text',
     icon: 'text-align-left',
-    surfaces: ['bar', 'palette'],
+    surfaces: ['selection', 'palette'],
     barCluster: 'text',
     visibleWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,
     enabledWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,
@@ -896,7 +887,7 @@ const TEXT_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'text align center',
     group: 'text',
     icon: 'text-align-center',
-    surfaces: ['bar', 'palette'],
+    surfaces: ['selection', 'palette'],
     barCluster: 'text',
     visibleWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,
     enabledWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,
@@ -915,7 +906,7 @@ const TEXT_COMMANDS: readonly CommandDescriptor[] = [
     keywords: 'text align right',
     group: 'text',
     icon: 'text-align-right',
-    surfaces: ['bar', 'palette'],
+    surfaces: ['selection', 'palette'],
     barCluster: 'text',
     visibleWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,
     enabledWhen: (ctx) => ctx.selection.singleUnlockedText !== undefined,

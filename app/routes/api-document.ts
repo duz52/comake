@@ -5,8 +5,8 @@ import { projectErrorResponse, readOwnedProjectDocument } from '../lib/server/pr
 
 /**
  * Canonical document read: GET /api/projects/:projectId/document.
- * The project is resolved through the current principal's registry before
- * the room is read. Unknown or foreign projects are a real 404.
+ * The document is read from the current principal's WorkspaceRoom. Unknown
+ * or foreign projects are a real 404.
  */
 export async function loader({ context, params }: Route.LoaderArgs) {
   try {
