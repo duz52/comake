@@ -178,7 +178,6 @@ export interface CommandActions {
   zoomFit: () => void;
   toggleInspector: () => void;
   toggleDrawer: (kind: DrawerKind) => void;
-  startPresent: () => void;
   exportPptx: () => void;
 }
 
@@ -1079,7 +1078,7 @@ const FILE_COMMANDS: readonly CommandDescriptor[] = [
     shortcut: { keys: ['f5'] },
     visibleWhen: () => true,
     enabledWhen: () => true,
-    run: (ctx) => ctx.actions.startPresent(),
+    run: (ctx) => ctx.store.controlPresentation({ action: 'start' }),
   },
   {
     id: 'file.export',

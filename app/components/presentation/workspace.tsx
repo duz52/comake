@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate, useNavigationType, useParams } from 'react-router';
 import { DEMO_DISPLAY_NAME } from '../../lib/presentation/actors';
 import type { PresentationDocument } from '../../lib/presentation/document';
-import { presentationSlidePath } from '../../lib/presentation/location';
+import { decideSessionRoute, presentationSlidePath } from '../../lib/presentation/location';
 import { downloadPptx } from '../../lib/presentation/pptx-download';
 import { PresentationStore, type PresentationSnapshot } from '../../lib/presentation/store';
 import { HttpProjectTransport } from '../../lib/presentation/transport';
@@ -57,7 +57,8 @@ function usePresentation(store: PresentationStore): PresentationSnapshot {
  * The editor shell. The store bootstraps from the loader's canonical
  * document (identical server render and client hydration) and talks to the
  * project server through the HTTP transport; session-only state (selection,
- * zoom, focus, tool mode) stays in local React state and the store session.
+ * zoom, focus, presenting) lives on the store session; tool mode stays in
+ * local React state.
  */
 export function PresentationWorkspace({
   document,
@@ -85,7 +86,11 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   const snapshot = usePresentation(store);
   const webMcpAvailable = useWebMcp(store);
   const navigate = useNavigate();
-  const { slideId } = useParams();
+  const navigationType = useNavigationType();
+  const { slideId: routeSlideId } = useParams();
+  const lastRouteSlideIdRef = useRef(routeSlideId);
+  // One-shot history policy for the route projection effect. Never a slide id.
+  const navigationPolicyRef = useRef<'push' | 'replace'>('replace');
 
   // --- Transient shell/view state (never canonical) --------------------------
   // The inspector and the wide-viewport flag start deterministic on every
@@ -97,13 +102,12 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [drawer, setDrawer] = useState<DrawerKind | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [presenting, setPresenting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | undefined>(undefined);
 
-  const activeSlideId =
-    slideId && snapshot.presentation.slides[slideId] ? slideId : snapshot.session.activeSlideId;
+  const presenting = snapshot.session.presenting;
+  const activeSlideId = snapshot.session.activeSlideId;
   const activeSlide = snapshot.presentation.slides[activeSlideId];
   const selectedIds = snapshot.session.selectedElementIds;
 
@@ -124,16 +128,50 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
     }
   }, [wideViewport]);
 
-  // Route <-> store synchronization: the URL names the canonical slide, the
-  // store owns session focus; they converge through this single effect.
+  // Route is a projection of session.activeSlideId. Equality first so the
+  // initial POP load is idle. A POP whose route id actually moved is inbound
+  // (Back/Forward) and never creates an entry. Every other mismatch writes the
+  // URL once: a consumed editor push intent becomes PUSH, otherwise REPLACE.
   useEffect(() => {
-    if (activeSlideId !== snapshot.session.activeSlideId) {
-      store.selectSlide(activeSlideId);
+    const decision = decideSessionRoute({
+      activeSlideId,
+      routeSlideId,
+      navigationType,
+      routeMoved: routeSlideId !== lastRouteSlideIdRef.current,
+      routeSlideExists: routeSlideId !== undefined && snapshot.presentation.slides[routeSlideId] !== undefined,
+      pushEditorHistory: navigationPolicyRef.current === 'push',
+    });
+    lastRouteSlideIdRef.current = routeSlideId;
+    navigationPolicyRef.current = 'replace';
+    if (decision.kind === 'idle') {
+      return;
     }
-    if (slideId !== activeSlideId) {
-      navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, activeSlideId), { replace: true });
+    if (decision.kind === 'inbound-pop') {
+      store.selectSlide(decision.slideId);
+      return;
     }
-  }, [activeSlideId, navigate, slideId, workspaceId, snapshot.presentation.id, snapshot.session.activeSlideId, store]);
+    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, activeSlideId), {
+      replace: decision.replace,
+    });
+  }, [
+    activeSlideId,
+    navigate,
+    navigationType,
+    routeSlideId,
+    snapshot.presentation,
+    store,
+    workspaceId,
+  ]);
+
+  // Render-time exclusivity is `!presenting` on the drawer/palette JSX below.
+  // This effect only clears their React state so they do not return on exit.
+  useEffect(() => {
+    if (!presenting) {
+      return;
+    }
+    setDrawer(null);
+    setPaletteOpen(false);
+  }, [presenting]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -150,9 +188,16 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
 
   // --- Slide lifecycle ---------------------------------------------------------
 
-  function openSlide(nextSlideId: string): void {
-    store.selectSlide(nextSlideId);
-    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, nextSlideId));
+  function openEditorSlide(slideId: string, elementId?: string): void {
+    const previousId = store.getSnapshot().session.activeSlideId;
+    navigationPolicyRef.current = 'push';
+    store.selectSlide(slideId);
+    if (elementId) {
+      store.selectElement(elementId);
+    }
+    if (store.getSnapshot().session.activeSlideId === previousId) {
+      navigationPolicyRef.current = 'replace';
+    }
   }
 
   async function addSlide(): Promise<void> {
@@ -161,8 +206,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       notify(result.notice);
       return;
     }
-    store.selectSlide(result.slideId);
-    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, result.slideId));
+    openEditorSlide(result.slideId);
   }
 
   async function addSlideAfter(slideId: string): Promise<void> {
@@ -171,8 +215,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       notify(result.notice);
       return;
     }
-    store.selectSlide(result.slideId);
-    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, result.slideId));
+    openEditorSlide(result.slideId);
   }
 
   async function duplicateSlide(slideId?: string): Promise<void> {
@@ -182,8 +225,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       notify(result.notice);
       return;
     }
-    store.selectSlide(result.slideId);
-    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, result.slideId));
+    openEditorSlide(result.slideId);
   }
 
   async function deleteSlide(slideId?: string): Promise<void> {
@@ -258,11 +300,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   // --- Comments ---------------------------------------------------------------
 
   function openComment(comment: Comment): void {
-    store.selectSlide(comment.slideId);
-    if (comment.elementId) {
-      store.selectElement(comment.elementId);
-    }
-    navigate(presentationSlidePath(workspaceId, snapshot.presentation.id, comment.slideId));
+    openEditorSlide(comment.slideId, comment.elementId);
     setDrawer(null);
   }
 
@@ -331,14 +369,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
     }
   }
 
-  // --- Export / Present ------------------------------------------------------------
-
-  /** Present is a modal surface: it closes every panel and palette first. */
-  const startPresent = useCallback(() => {
-    setDrawer(null);
-    setPaletteOpen(false);
-    setPresenting(true);
-  }, []);
+  // --- Export ----------------------------------------------------------------------
 
   function exportPresentation(): void {
     try {
@@ -420,7 +451,6 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         zoomFit,
         toggleInspector: () => setInspectorOpen((current) => !current),
         toggleDrawer: (kind) => setDrawer((current) => (current === kind ? null : kind)),
-        startPresent,
         exportPptx: exportPresentation,
       },
     }),
@@ -434,7 +464,6 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       selectedIds,
       selection,
       snapshot,
-      startPresent,
       store,
       toolMode,
       wideViewport,
@@ -477,7 +506,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         // input preventDefault's its own Escape before this listener.
         if (kb.presenting) {
           event.preventDefault();
-          setPresenting(false);
+          store.controlPresentation({ action: 'exit' });
           return;
         }
         if (kb.paletteOpen) {
@@ -566,7 +595,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         canExport
         onExport={exportPresentation}
         onOpenDrawer={(kind) => setDrawer((current) => (current === kind ? null : kind))}
-        onPresent={startPresent}
+        onPresent={() => store.controlPresentation({ action: 'start' })}
         onRenamePresentation={renamePresentation}
         openCommentCount={openCommentCount}
         pendingAgentChanges={pendingAgentChanges}
@@ -581,7 +610,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       />
 
       <div className={`editor-main${inspectorOpen && wideViewport ? '' : ' inspector-closed'}`}>
-        <SlideRail ctx={ctx} onOpenSlide={openSlide} />
+        <SlideRail ctx={ctx} onOpenSlide={openEditorSlide} />
         <section aria-label="Canvas" className="canvas-column">
           <CanvasStage
             ctx={ctx}
@@ -618,7 +647,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         slideNumber={snapshot.presentation.slideOrder.indexOf(activeSlide.id) + 1}
       />
 
-      {drawer === 'agent' ? (
+      {!presenting && drawer === 'agent' ? (
         <PanelDrawer onClose={() => setDrawer(null)} title="Agent">
           <AgentPanel
             onRevertAgentChange={revertAgentChange}
@@ -627,7 +656,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
           />
         </PanelDrawer>
       ) : null}
-      {drawer === 'comments' ? (
+      {!presenting && drawer === 'comments' ? (
         <PanelDrawer onClose={() => setDrawer(null)} title="Comments">
           <CommentsPanel
             onAddComment={addComment}
@@ -637,21 +666,15 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
           />
         </PanelDrawer>
       ) : null}
-      {drawer === 'activity' ? (
+      {!presenting && drawer === 'activity' ? (
         <PanelDrawer onClose={() => setDrawer(null)} title="Activity">
           <ActivityPanel onRevertAgentChange={revertAgentChange} snapshot={snapshot} />
         </PanelDrawer>
       ) : null}
 
-      <CommandPalette ctx={ctx} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
+      <CommandPalette ctx={ctx} onClose={() => setPaletteOpen(false)} open={!presenting && paletteOpen} />
 
-      {presenting ? (
-        <PresentMode
-          onExit={() => setPresenting(false)}
-          snapshot={snapshot}
-          startSlideId={activeSlide.id}
-        />
-      ) : null}
+      {presenting ? <PresentMode snapshot={snapshot} store={store} /> : null}
 
       {toast ? (
         <div className="toast" role="status">

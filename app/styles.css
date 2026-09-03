@@ -1091,12 +1091,12 @@ select:focus-visible,
 /* --- Popup stacking ------------------------------------------------------------ */
 
 /*
- * One owning layer for every popup in the app. Base UI paints a popup
+ * One owning layer for every editor popup in the app. Base UI paints a popup
  * through its fixed Positioner; the Popup inside is static, so a z-index on
  * the popup class can never apply. Canvas chrome (resize handles at z-index
- * 4), panels, toasts, and Present mode all live below this level, so menus
- * and tooltips stack above the selection no matter which element is on top
- * or how the canvas is transformed.
+ * 4), panels, and toasts live below this level, so menus and tooltips stack
+ * above the selection no matter which element is on top or how the canvas is
+ * transformed. Present mode is the top-level modal and sits above this layer.
  */
 .popup-positioner {
   z-index: 70;
@@ -2087,10 +2087,11 @@ select:focus-visible,
 
 /* --- Present mode --------------------------------------------------------------------- */
 
+/* Top-level modal: above editor chrome, drawers, palette, toasts, and popups. */
 .present-mode {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 80;
   display: grid;
   place-items: center;
   background: #101010;

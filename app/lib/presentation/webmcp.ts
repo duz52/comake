@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
+  controlPresentationInputSchema,
   isRecord,
+  parseControlPresentationInput,
   parseToolInput,
   parseWriteInput,
   presentationWriteInputSchema,
@@ -9,7 +11,13 @@ import {
 import { downloadPptx } from './pptx-download';
 import { DEMO_DISPLAY_NAME } from './actors';
 import { slideTitleText, type DispatchFailure } from './document';
-import { PresentationStore, type PresentationSnapshot, type TransportFailure } from './store';
+import {
+  presentViewFrom,
+  PresentationStore,
+  type PresentationSnapshot,
+  type PresentResult,
+  type TransportFailure,
+} from './store';
 import { startWebMcpRegistration, type RegisteredTool } from './webmcp-registration';
 import type { ChangeSet, Frame, Presentation, Slide } from '../../types/presentation';
 
@@ -21,10 +29,12 @@ import type { ChangeSet, Frame, Presentation, Slide } from '../../types/presenta
  */
 
 type ToolFailureCode =
+  | 'AT_BOUNDARY'
   | 'CONFLICT'
   | 'INVALID_INPUT'
   | 'LOCKED_ELEMENT'
   | 'NOT_FOUND'
+  | 'NOT_PRESENTING'
   | 'STALE_REVISION'
   | 'TRANSPORT_ERROR'
   | 'UNSUPPORTED';
@@ -125,6 +135,33 @@ function describeSlide(slideId: string, index: number, slide: Slide): ToolResult
     index,
     name: slide.name,
   };
+}
+
+function flattenPresentView(view: ReturnType<typeof presentViewFrom>): ToolResult {
+  return {
+    presenting: view.presenting,
+    focusRevision: view.focusRevision,
+    activeSlide: view.activeSlide,
+    atStart: view.atStart,
+    atEnd: view.atEnd,
+  };
+}
+
+function controlPresentationToolResult(
+  result: PresentResult | { ok: false; action?: string; code: ToolFailureCode; detail: string; view: ReturnType<typeof presentViewFrom> },
+): ToolResult {
+  const body: ToolResult = {
+    ok: result.ok,
+    ...flattenPresentView(result.view),
+  };
+  if ('action' in result && result.action !== undefined) {
+    body.action = result.action;
+  }
+  if (!result.ok) {
+    body.code = result.code;
+    body.detail = result.detail;
+  }
+  return body;
 }
 
 /**
@@ -258,21 +295,16 @@ function describeSelectedElement(slide: Slide, elementId: string): unknown {
   return selection;
 }
 
-export function useWebMcp(store: PresentationStore): boolean {
-  const [isAvailable, setIsAvailable] = useState(false);
-
-  useEffect(() => {
-    const modelContext = document.modelContext;
-    if (!modelContext) {
-      setIsAvailable(false);
-      return undefined;
-    }
-
-    const tools: RegisteredTool[] = [
+/**
+ * The native presentation tool set. Execute closures read `store.getSnapshot()`
+ * live; registration must call this once per store, not per slide or mode.
+ */
+export function presentationWebMcpTools(store: PresentationStore): RegisteredTool[] {
+  return [
       {
         name: 'get_presentation_context',
         description:
-          'Start here. Read the current human focus and the canonical canvas: document revision, focus revision, presentation id and title, the canonical coordinateSpace, the active slide (stable id, one-based index, name, title), and the human selection (elementIds plus, for each selected element, kind, name, full canonical frame, optional rotation, locked flag, zIndex, and its full canonical value: text and style, or geometry, fill, and stroke; both arrays are empty when nothing is selected). Call get_presentation_spatial_map or read_presentation_slide from here only when you need a specific slide in more detail.',
+          'Start here. Read the current human focus and the canonical canvas: document revision, focus revision, whether the slideshow is active (presenting), presentation id and title, the canonical coordinateSpace, the active slide the audience sees (stable id, one-based index, name, title), and the human selection (elementIds plus, for each selected element, kind, name, full canonical frame, optional rotation, locked flag, zIndex, and its full canonical value: text and style, or geometry, fill, and stroke; both arrays are empty when nothing is selected). To start, move next/previous, jump to a slide, or exit the slideshow, call control_presentation — do not screenshot. Call get_presentation_spatial_map or read_presentation_slide from here only when you need a specific slide in more detail.',
         inputSchema: noInputSchema(),
         annotations: { readOnlyHint: true },
         execute: (input) => {
@@ -286,6 +318,7 @@ export function useWebMcp(store: PresentationStore): boolean {
             ok: true,
             revision: presentation.revision,
             focusRevision: session.focusRevision,
+            presenting: session.presenting,
             presentation: {
               id: presentation.id,
               title: presentation.title,
@@ -377,7 +410,7 @@ export function useWebMcp(store: PresentationStore): boolean {
       {
         name: 'get_presentation_outline',
         description:
-          'Read the presentation outline: title, current revision, the slide the human is viewing, and every slide with its stable id, name, title text, and element count. After get_presentation_context, use this to enumerate slides beyond the active one and to discover stable slide ids.',
+          'Read the presentation outline: title, current revision, whether the slideshow is active (presenting), the slide the audience sees (activeSlideId), and every slide with its stable id, name, title text, and element count. After get_presentation_context, use this to enumerate slides beyond the active one and to discover stable slide ids for control_presentation go_to_slide.',
         inputSchema: noInputSchema(),
         annotations: { readOnlyHint: true },
         execute: (input) => {
@@ -392,6 +425,7 @@ export function useWebMcp(store: PresentationStore): boolean {
               id: presentation.id,
               title: presentation.title,
               revision: presentation.revision,
+              presenting: session.presenting,
               activeSlideId: session.activeSlideId,
               slides: presentation.slideOrder.map((slideId, index) => {
                 const slide = presentation.slides[slideId];
@@ -610,9 +644,41 @@ export function useWebMcp(store: PresentationStore): boolean {
           }
         },
       },
+      {
+        name: 'control_presentation',
+        description:
+          'Control the live slideshow: start, next, previous, go_to_slide, or exit. This changes only the client session — it does not create a ChangeSet and does not require baseRevision. next/previous do not wrap; at the first or last slide they return AT_BOUNDARY. next/previous/go_to_slide require an active slideshow (start first); otherwise they return NOT_PRESENTING and do not move editor focus. Voice agents should call this instead of screenshotting.',
+        inputSchema: controlPresentationInputSchema,
+        execute: (input) => {
+          const parsed = parseControlPresentationInput(input);
+          if (!parsed.ok) {
+            const action =
+              isRecord(input) && typeof input.action === 'string' ? input.action : undefined;
+            return controlPresentationToolResult({
+              ok: false,
+              action,
+              code: 'INVALID_INPUT',
+              detail: parsed.detail,
+              view: presentViewFrom(store.getSnapshot()),
+            });
+          }
+          return controlPresentationToolResult(store.controlPresentation(parsed.value));
+        },
+      },
     ];
+}
 
-    return startWebMcpRegistration(modelContext, tools, {
+export function useWebMcp(store: PresentationStore): boolean {
+  const [isAvailable, setIsAvailable] = useState(false);
+
+  useEffect(() => {
+    const modelContext = document.modelContext;
+    if (!modelContext) {
+      setIsAvailable(false);
+      return undefined;
+    }
+
+    return startWebMcpRegistration(modelContext, presentationWebMcpTools(store), {
       onReady: () => setIsAvailable(true),
       onFailed: (error) => {
         console.error('[webmcp] tool registration failed:', error);

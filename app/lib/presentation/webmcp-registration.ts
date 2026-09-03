@@ -25,7 +25,9 @@ export interface RegisteredTool {
   name: string;
   /**
    * WebMCP imperative API metadata. `annotations.readOnlyHint: true` declares
-   * that invocation never mutates the canonical document.
+   * that invocation never mutates the canonical document and does not change
+   * the human's live view. Session-only tools that change the displayed slide
+   * or slideshow omit annotations even though they create no ChangeSet.
    */
   annotations?: {
     readOnlyHint?: boolean;

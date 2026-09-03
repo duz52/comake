@@ -975,6 +975,77 @@ export function parseToolInput(
   return { ok: true, value: input };
 }
 
+const PRESENT_ACTIONS = ['start', 'next', 'previous', 'go_to_slide', 'exit'] as const;
+
+export type ControlPresentationInput =
+  | { action: 'start'; slideId?: string }
+  | { action: 'next' }
+  | { action: 'previous' }
+  | { action: 'go_to_slide'; slideId: string }
+  | { action: 'exit' };
+
+function isPresentAction(value: string): value is ControlPresentationInput['action'] {
+  return (PRESENT_ACTIONS as readonly string[]).includes(value);
+}
+
+/**
+ * Slideshow control input: combination rules live here, not in a oneOf forest.
+ * `slideId` is required for go_to_slide, optional for start, forbidden otherwise.
+ */
+export function parseControlPresentationInput(input: unknown): ParseResult<ControlPresentationInput> {
+  const parsed = parseToolInput(input, ['action', 'slideId']);
+  if (!parsed.ok) return parsed;
+
+  const actionValue = parsed.value.action;
+  if (typeof actionValue !== 'string' || !isPresentAction(actionValue)) {
+    return parseFailure('action must be one of start, next, previous, go_to_slide, exit.');
+  }
+
+  const slideIdValue = parsed.value.slideId;
+  if (actionValue === 'go_to_slide') {
+    if (slideIdValue === undefined) {
+      return parseFailure('slideId is required for action "go_to_slide".');
+    }
+    const slideId = parseNonEmptyString(slideIdValue, 'slideId');
+    if (!slideId.ok) return slideId;
+    return { ok: true, value: { action: 'go_to_slide', slideId: slideId.value } };
+  }
+
+  if (actionValue === 'start') {
+    if (slideIdValue === undefined) {
+      return { ok: true, value: { action: 'start' } };
+    }
+    const slideId = parseNonEmptyString(slideIdValue, 'slideId');
+    if (!slideId.ok) return slideId;
+    return { ok: true, value: { action: 'start', slideId: slideId.value } };
+  }
+
+  if (slideIdValue !== undefined) {
+    return parseFailure(`slideId is not allowed for action "${actionValue}".`);
+  }
+  return { ok: true, value: { action: actionValue } };
+}
+
+export const controlPresentationInputSchema = {
+  type: 'object',
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['start', 'next', 'previous', 'go_to_slide', 'exit'],
+      description:
+        'start enters the slideshow on the current slide (optional slideId jumps first). next/previous move one slide and do not wrap. go_to_slide requires slideId. exit returns to the editor on the displayed slide. next/previous/go_to_slide require an active slideshow.',
+    },
+    slideId: {
+      type: 'string',
+      minLength: 1,
+      description:
+        'Stable Comake slide id. Required for go_to_slide. Optional for start. Forbidden for next, previous, and exit.',
+    },
+  },
+  required: ['action'],
+  additionalProperties: false,
+};
+
 // --- JSON Schema (kept in lockstep with the parsers above) -----------------------
 
 const canonicalColorSchema = {

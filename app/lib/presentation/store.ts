@@ -1,6 +1,6 @@
 import type { ChangeSet, Presentation } from '../../types/presentation';
 import type { ClientDispatchRequest } from './attribution';
-import type { DispatchFailure, DispatchResult, PresentationDocument } from './document';
+import { slideTitleText, type DispatchFailure, type DispatchResult, type PresentationDocument } from './document';
 import type { ProjectTransport } from './transport';
 
 /** Session zoom bounds in scale factor (1 = 100%); view state, never canonical. */
@@ -10,12 +10,67 @@ export const MAX_SESSION_ZOOM = 4;
 /** Client-local view state. Never enters ChangeSets or the canonical model. */
 export interface DocumentSession {
   activeSlideId: string;
-  /** Monotonic version of the human focus: increments only when the active slide or the element selection actually changes. */
+  /** Whether the slideshow overlay is showing the active slide to the audience. */
+  presenting: boolean;
+  /**
+   * Monotonic version of the human focus: increments only when the active slide,
+   * the element selection, or the presenting flag actually changes.
+   */
   focusRevision: number;
   /** Ids of the elements selected on the active slide; a set (no duplicates, all present on the active slide). */
   selectedElementIds: string[];
   /** View scale of the canvas; bounded and finite. */
   zoom: number;
+}
+
+export type PresentAction = 'start' | 'next' | 'previous' | 'go_to_slide' | 'exit';
+
+export type PresentCommand =
+  | { action: 'start'; slideId?: string }
+  | { action: 'next' }
+  | { action: 'previous' }
+  | { action: 'go_to_slide'; slideId: string }
+  | { action: 'exit' };
+
+export type PresentFailureCode = 'AT_BOUNDARY' | 'INVALID_INPUT' | 'NOT_FOUND' | 'NOT_PRESENTING';
+
+export type PresentSlideView = {
+  id: string;
+  /** One-based position in the canonical slide order. */
+  index: number;
+  name: string;
+  title: string | undefined;
+};
+
+export type PresentView = {
+  presenting: boolean;
+  focusRevision: number;
+  activeSlide: PresentSlideView;
+  atStart: boolean;
+  atEnd: boolean;
+};
+
+export type PresentResult =
+  | { ok: true; action: PresentAction; view: PresentView }
+  | { ok: false; action: PresentAction; code: PresentFailureCode; detail: string; view: PresentView };
+
+/** The audience-facing slide view projected from one session snapshot. */
+export function presentViewFrom(snapshot: PresentationSnapshot): PresentView {
+  const { presentation, session } = snapshot;
+  const index = presentation.slideOrder.indexOf(session.activeSlideId);
+  const slide = presentation.slides[session.activeSlideId];
+  return {
+    presenting: session.presenting,
+    focusRevision: session.focusRevision,
+    activeSlide: {
+      id: slide.id,
+      index: index + 1,
+      name: slide.name,
+      title: slideTitleText(slide),
+    },
+    atStart: index <= 0,
+    atEnd: index >= presentation.slideOrder.length - 1,
+  };
 }
 
 export interface PresentationSnapshot extends PresentationDocument {
@@ -87,6 +142,7 @@ export class PresentationStore {
       ...document,
       session: {
         activeSlideId: initialSlideId,
+        presenting: false,
         focusRevision: 0,
         selectedElementIds: [],
         zoom: 1,
@@ -113,13 +169,27 @@ export class PresentationStore {
     if (slideId === session.activeSlideId && session.selectedElementIds.length === 0) {
       return;
     }
-    // A slide change always clears the selection and advances the focus revision.
-    this.applySession({
-      activeSlideId: slideId,
-      focusRevision: session.focusRevision + 1,
-      selectedElementIds: [],
-      zoom: session.zoom,
-    });
+    this.moveActiveSlide(slideId);
+  }
+
+  /**
+   * Session-only slideshow control. Never dispatches a ChangeSet or requires
+   * baseRevision. Failures are structured so a caller can speak them without a
+   * follow-up read; the current view is always included.
+   */
+  public controlPresentation(command: PresentCommand): PresentResult {
+    switch (command.action) {
+      case 'start':
+        return this.startPresentation(command.slideId);
+      case 'exit':
+        return this.exitPresentation();
+      case 'next':
+        return this.stepPresentation(1);
+      case 'previous':
+        return this.stepPresentation(-1);
+      case 'go_to_slide':
+        return this.goToPresentedSlide(command.slideId);
+    }
   }
 
   /** Single selection: exactly one element, or none when the id is omitted. */
@@ -432,6 +502,96 @@ export class PresentationStore {
     });
   }
 
+  private startPresentation(slideId: string | undefined): PresentResult {
+    const targetId = slideId ?? this.snapshot.session.activeSlideId;
+    if (slideId !== undefined && !this.snapshot.presentation.slides[slideId]) {
+      return this.presentFail('start', 'NOT_FOUND', `No slide "${slideId}" in this presentation.`);
+    }
+    const session = this.snapshot.session;
+    if (session.presenting && session.activeSlideId === targetId) {
+      return this.presentOk('start');
+    }
+    const slideChanged = targetId !== session.activeSlideId;
+    this.applySession({
+      ...session,
+      presenting: true,
+      activeSlideId: targetId,
+      selectedElementIds: slideChanged ? [] : session.selectedElementIds,
+      focusRevision: session.focusRevision + 1,
+    });
+    return this.presentOk('start');
+  }
+
+  private exitPresentation(): PresentResult {
+    const session = this.snapshot.session;
+    if (!session.presenting) {
+      return this.presentOk('exit');
+    }
+    this.applySession({
+      ...session,
+      presenting: false,
+      focusRevision: session.focusRevision + 1,
+    });
+    return this.presentOk('exit');
+  }
+
+  private stepPresentation(delta: 1 | -1): PresentResult {
+    const action = delta === 1 ? 'next' : 'previous';
+    const session = this.snapshot.session;
+    if (!session.presenting) {
+      return this.presentFail(action, 'NOT_PRESENTING', 'The slideshow is not active. Use action "start" first.');
+    }
+    const order = this.snapshot.presentation.slideOrder;
+    const nextIndex = order.indexOf(session.activeSlideId) + delta;
+    if (nextIndex < 0 || nextIndex >= order.length) {
+      return this.presentFail(
+        action,
+        'AT_BOUNDARY',
+        delta === 1 ? 'Already at the last slide.' : 'Already at the first slide.',
+      );
+    }
+    this.moveActiveSlide(order[nextIndex]);
+    return this.presentOk(action);
+  }
+
+  private goToPresentedSlide(slideId: string): PresentResult {
+    const session = this.snapshot.session;
+    if (!session.presenting) {
+      return this.presentFail(
+        'go_to_slide',
+        'NOT_PRESENTING',
+        'The slideshow is not active. Use action "start" first.',
+      );
+    }
+    if (!this.snapshot.presentation.slides[slideId]) {
+      return this.presentFail('go_to_slide', 'NOT_FOUND', `No slide "${slideId}" in this presentation.`);
+    }
+    if (slideId === session.activeSlideId) {
+      return this.presentOk('go_to_slide');
+    }
+    this.moveActiveSlide(slideId);
+    return this.presentOk('go_to_slide');
+  }
+
+  /** One emit: change the active slide, clear selection, bump focus once. Preserves presenting. */
+  private moveActiveSlide(slideId: string): void {
+    const session = this.snapshot.session;
+    this.applySession({
+      ...session,
+      activeSlideId: slideId,
+      selectedElementIds: [],
+      focusRevision: session.focusRevision + 1,
+    });
+  }
+
+  private presentOk(action: PresentAction): PresentResult {
+    return { ok: true, action, view: presentViewFrom(this.snapshot) };
+  }
+
+  private presentFail(action: PresentAction, code: PresentFailureCode, detail: string): PresentResult {
+    return { ok: false, action, code, detail, view: presentViewFrom(this.snapshot) };
+  }
+
   /** Pop the top user-undo entry and notify listeners. */
   private popUserUndoEntry(): void {
     this.snapshot = {
@@ -481,7 +641,8 @@ function transportFailureDetail(error: unknown): string {
  * formerly existing slide — to the first canonical post-replacement slide;
  * the selection is cleared either way. A dropped selection or moved focus
  * advances the focus revision exactly once so the session can never expose a
- * dangling slide or selection.
+ * dangling slide or selection. The presenting flag is preserved on every path:
+ * live deck mutation never exits the slideshow.
  */
 function sessionAfterDispatch(
   document: PresentationDocument,
@@ -496,10 +657,9 @@ function sessionAfterDispatch(
       return session;
     }
     return {
-      activeSlideId,
+      ...session,
       selectedElementIds: survivingSelection,
       focusRevision: session.focusRevision + 1,
-      zoom: session.zoom,
     };
   }
 
@@ -515,9 +675,9 @@ function sessionAfterDispatch(
     formerSlideOrder.slice(0, formerIndex).reverse().find((slideId) => slideId in survivingSlides) ??
     document.presentation.slideOrder[0];
   return {
+    ...session,
     activeSlideId: successorId,
     selectedElementIds: [],
     focusRevision: session.focusRevision + 1,
-    zoom: session.zoom,
   };
 }

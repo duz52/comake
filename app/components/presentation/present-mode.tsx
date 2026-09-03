@@ -1,36 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
-import type { PresentationSnapshot } from '../../lib/presentation/store';
+import { useEffect, useRef } from 'react';
+import type { PresentationSnapshot, PresentationStore } from '../../lib/presentation/store';
 import { SlideArtwork } from './slide-artwork';
 import { slideDisplayName } from './slide-label';
 
 /**
- * Genuine full-screen presentation of the canonical deck: the active slide
- * scaled to the window, arrow-key navigation, and exit via Escape or the on
- * screen bar. No fake chrome — it presents the real snapshot.
+ * Controlled projection of the store session: the active slide scaled to the
+ * window, navigation through the same `controlPresentation` transitions the
+ * human chrome and WebMCP use, and exit via the on-screen bar. Escape is owned
+ * by the workspace keyboard controller, never by this document handler.
  *
- * Focus contract: the stage takes focus on open and restores it to the
- * opener on close; Tab and Shift+Tab stay trapped inside. Escape is owned by
- * the workspace keyboard controller (present -> palette -> drawer), never by
- * this document handler.
+ * Focus contract: a modal dialog (`aria-modal`). The stage takes focus on
+ * open and restores it to the opener on close; Tab and Shift+Tab stay trapped
+ * inside.
  *
- * Live mutation safety: the canonical deck can change while presenting
- * (e.g. an agent deletes slides). The rendered index is clamped once against
- * the current order before any read or navigation; the kernel guarantees at
- * least one slide, so the clamped index always names a real slide.
+ * Live mutation safety: the store re-derives `activeSlideId` when the canonical
+ * deck changes. This overlay never keeps a parallel index.
  */
 export function PresentMode({
-  onExit,
   snapshot,
-  startSlideId,
+  store,
 }: {
-  onExit: () => void;
   snapshot: PresentationSnapshot;
-  startSlideId: string;
+  store: PresentationStore;
 }) {
   const slideOrder = snapshot.presentation.slideOrder;
-  const [index, setIndex] = useState(() => Math.max(0, slideOrder.indexOf(startSlideId)));
+  const slideId = snapshot.session.activeSlideId;
+  const index = slideOrder.indexOf(slideId);
+  const lastIndex = slideOrder.length - 1;
+  const slide = snapshot.presentation.slides[slideId];
   const rootRef = useRef<HTMLDivElement>(null);
-  // The element that owned focus before the stage opened; restored on close.
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -47,33 +45,31 @@ export function PresentMode({
   }, []);
 
   useEffect(() => {
-    // The kernel guarantees a non-empty deck, so the last index is always >= 0.
-    const lastIndex = slideOrder.length - 1;
     const handler = (event: KeyboardEvent): void => {
-      // Another owner handled this key first; never process it twice.
       if (event.defaultPrevented) {
         return;
       }
+      const order = store.getSnapshot().presentation.slideOrder;
       switch (event.key) {
         case 'ArrowRight':
         case ' ':
         case 'PageDown':
         case 'Enter':
           event.preventDefault();
-          setIndex((current) => Math.min(current + 1, lastIndex));
+          store.controlPresentation({ action: 'next' });
           return;
         case 'ArrowLeft':
         case 'PageUp':
           event.preventDefault();
-          setIndex((current) => Math.max(current - 1, 0));
+          store.controlPresentation({ action: 'previous' });
           return;
         case 'Home':
           event.preventDefault();
-          setIndex(0);
+          store.controlPresentation({ action: 'go_to_slide', slideId: order[0] });
           return;
         case 'End':
           event.preventDefault();
-          setIndex(lastIndex);
+          store.controlPresentation({ action: 'go_to_slide', slideId: order[order.length - 1] });
           return;
         case 'Tab':
           trapTab(rootRef.current, event);
@@ -82,19 +78,12 @@ export function PresentMode({
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [slideOrder]);
-
-  // One clamped index for render and navigation: a live deck shrinking under
-  // the presenter never yields an out-of-range index or an undefined slide.
-  const lastIndex = slideOrder.length - 1;
-  const safeIndex = Math.min(index, lastIndex);
-
-  const slideId = slideOrder[safeIndex];
-  const slide = snapshot.presentation.slides[slideId];
+  }, [store]);
 
   return (
     <div
       aria-label={`Presenting: ${snapshot.presentation.title}`}
+      aria-modal="true"
       className="present-mode"
       ref={rootRef}
       role="dialog"
@@ -107,26 +96,30 @@ export function PresentMode({
         <button
           aria-label="Previous slide"
           className="present-btn"
-          disabled={safeIndex === 0}
-          onClick={() => setIndex((current) => Math.max(current - 1, 0))}
+          disabled={index <= 0}
+          onClick={() => store.controlPresentation({ action: 'previous' })}
           type="button"
         >
           ←
         </button>
         <span className="present-counter">
-          {safeIndex + 1} / {slideOrder.length}
+          {index + 1} / {slideOrder.length}
         </span>
         <span className="present-name">{slideDisplayName(slide)}</span>
         <button
           aria-label="Next slide"
           className="present-btn"
-          disabled={safeIndex === lastIndex}
-          onClick={() => setIndex((current) => Math.min(current + 1, lastIndex))}
+          disabled={index >= lastIndex}
+          onClick={() => store.controlPresentation({ action: 'next' })}
           type="button"
         >
           →
         </button>
-        <button className="present-btn is-primary" onClick={onExit} type="button">
+        <button
+          className="present-btn is-primary"
+          onClick={() => store.controlPresentation({ action: 'exit' })}
+          type="button"
+        >
           Exit
         </button>
       </div>

@@ -54,6 +54,7 @@ function templatePreviewSnapshot(template: PresentationTemplate): PresentationSn
     changeSetOrder: [],
     session: {
       activeSlideId: template.initialSlideId,
+      presenting: false,
       focusRevision: 0,
       selectedElementIds: [],
       zoom: 1,
