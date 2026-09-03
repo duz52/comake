@@ -192,8 +192,6 @@ export interface CommandContext {
   inspectorOpen: boolean;
   /** The rendered zoom readout: fit scale times the session zoom, in percent. */
   zoomPercent: number;
-  /** Whether the inspector panel can render at the current viewport width. */
-  inspectorSupported: boolean;
   undoAvailable: boolean;
   redoAvailable: boolean;
   notify: (message: string) => void;
@@ -441,9 +439,9 @@ export interface ToolbarPlan {
 /**
  * Deterministic width-tier layout for the session bar. History, tools, and
  * zoom stay inline at every width. The inspector toggle sheds below
- * `INSPECTOR_MIN_VIEWPORT` (the same threshold that decides whether the
- * panel can render). Object clusters (edit/order/align/text) belong on the
- * selection surface, not this planner.
+ * `INSPECTOR_INLINE_VIEWPORT` (the same threshold that switches the panel
+ * from an inline column to an overlay). Object clusters (edit/order/align/
+ * text) belong on the selection surface, not this planner.
  */
 export function planToolbarLayout(width: number, visible: readonly CommandListItem[]): ToolbarPlan {
   const inline: CommandListItem[] = [];
@@ -456,15 +454,15 @@ export function planToolbarLayout(width: number, visible: readonly CommandListIt
 }
 
 /**
- * The one viewport fact that owns the inspector toggle: the panel physically
- * renders only at or above this width, so the planner sheds the toggle below
- * it and the workspace collapses the panel below it — one threshold, two
- * consumers, no disabled inline toggle between 1120 and 1199.
+ * The one viewport fact that owns inspector presentation: at or above this
+ * width the panel is the inline column and the toggle stays on the session
+ * bar; below it the panel is a right overlay and the toggle sheds to
+ * overflow. The command itself stays enabled at every width.
  */
-export const INSPECTOR_MIN_VIEWPORT = 1200;
+export const INSPECTOR_INLINE_VIEWPORT = 1200;
 
 function clusterStaysInline(cluster: BarCluster | undefined, width: number): boolean {
-  return cluster === 'inspector' ? width >= INSPECTOR_MIN_VIEWPORT : true;
+  return cluster === 'inspector' ? width >= INSPECTOR_INLINE_VIEWPORT : true;
 }
 
 // --- Tooltip text ------------------------------------------------------------------
@@ -1021,10 +1019,7 @@ const VIEW_COMMANDS: readonly CommandDescriptor[] = [
     surfaces: ['bar', 'palette'],
     barCluster: 'inspector',
     visibleWhen: () => true,
-    // The panel physically collapses below the wide-viewport breakpoint, so
-    // the toggle is honestly disabled there instead of opening nothing.
-    enabledWhen: (ctx) => ctx.inspectorSupported,
-    disabledReason: () => 'the inspector needs a wider window',
+    enabledWhen: () => true,
     isChecked: (ctx) => ctx.inspectorOpen,
     labelText: (ctx) => (ctx.inspectorOpen ? 'Hide inspector' : 'Show inspector'),
     run: (ctx) => ctx.actions.toggleInspector(),

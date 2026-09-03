@@ -35,6 +35,7 @@ interface CanvasContextMenuProps {
   /** Runs before the menu opens: selection policy plus the target capture. */
   onContextMenu: (event: MouseEvent) => void;
   onOpenChange: (open: boolean) => void;
+  open: boolean;
   /** Resolves where focus returns when the menu closes; false leaves focus alone. */
   finalFocus?: () => HTMLElement | false;
 }
@@ -46,11 +47,11 @@ interface CanvasContextMenuProps {
  * commands form one submenu. Selection-before-open and focus restoration
  * stay with CanvasStage.
  */
-export function CanvasContextMenu({ ctx, finalFocus, onContextMenu, onOpenChange, render }: CanvasContextMenuProps) {
+export function CanvasContextMenu({ ctx, finalFocus, onContextMenu, onOpenChange, open, render }: CanvasContextMenuProps) {
   const commands = commandsForSurface(ctx, 'menu');
   const platform = detectPlatform();
   return (
-    <ContextMenu.Root onOpenChange={onOpenChange}>
+    <ContextMenu.Root onOpenChange={onOpenChange} open={open}>
       <ContextMenu.Trigger onContextMenu={onContextMenu} render={render} />
       <ContextMenu.Portal>
         <ContextMenu.Positioner className="popup-positioner" alignOffset={-4} sideOffset={-4}>

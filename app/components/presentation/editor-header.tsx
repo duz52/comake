@@ -26,6 +26,7 @@ export type { DrawerKind } from './command-registry';
 export function EditorHeader({
   activeDrawer,
   canExport,
+  menuEpoch,
   onExport,
   onOpenDrawer,
   onPresent,
@@ -38,6 +39,7 @@ export function EditorHeader({
 }: {
   activeDrawer: DrawerKind | null;
   canExport: boolean;
+  menuEpoch: number;
   onExport: () => void;
   onOpenDrawer: (drawer: DrawerKind) => void;
   onPresent: () => void;
@@ -139,6 +141,7 @@ export function EditorHeader({
         <div className="hdr-review">
           <ReviewMenu
             activeDrawer={activeDrawer}
+            menuEpoch={menuEpoch}
             onOpenDrawer={onOpenDrawer}
             openCommentCount={openCommentCount}
             pendingAgentChanges={pendingAgentChanges}
@@ -265,18 +268,26 @@ function PresentationTitleEditor({
 
 function ReviewMenu({
   activeDrawer,
+  menuEpoch,
   onOpenDrawer,
   openCommentCount,
   pendingAgentChanges,
 }: {
   activeDrawer: DrawerKind | null;
+  menuEpoch: number;
   onOpenDrawer: (drawer: DrawerKind) => void;
   openCommentCount: number;
   pendingAgentChanges: number;
 }) {
   const reviewOpen = activeDrawer !== null;
+  const [open, setOpen] = useState(false);
+  const [seenEpoch, setSeenEpoch] = useState(menuEpoch);
+  if (seenEpoch !== menuEpoch) {
+    setSeenEpoch(menuEpoch);
+    setOpen(false);
+  }
   return (
-    <Menu.Root>
+    <Menu.Root onOpenChange={setOpen} open={open}>
       <Tooltip content="Review panels">
         <Menu.Trigger
           aria-label="Review panels"

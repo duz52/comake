@@ -31,7 +31,7 @@ import { CommandBar, type ToolMode } from './command-bar';
 import {
   commandsForSurface,
   deriveSelectionFlags,
-  INSPECTOR_MIN_VIEWPORT,
+  INSPECTOR_INLINE_VIEWPORT,
   shortcutMatchesKey,
   type CommandContext,
 } from './command-registry';
@@ -41,8 +41,16 @@ import { ActivityPanel } from './activity-panel';
 import { EditorHeader, type DrawerKind } from './editor-header';
 import { EditorStatusBar } from './editor-status-bar';
 import { InspectorPanel } from './inspector-panel';
-import { PanelDrawer } from './panel-drawer';
+import { InspectorFrame, PanelDrawer } from './panel-drawer';
 import { PresentMode } from './present-mode';
+import {
+  deriveShellChrome,
+  overlayOpenerFromMenuState,
+  toggleDrawerTransition,
+  toggleInspectorTransition,
+  viewportChangeTransition,
+  type InspectorIntent,
+} from './shell-overlay';
 import { SlideRail } from './slide-rail';
 import { slideDisplayName } from './slide-label';
 import { TooltipProvider } from '../ui/tooltip';
@@ -93,16 +101,17 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   const navigationPolicyRef = useRef<'push' | 'replace'>('replace');
 
   // --- Transient shell/view state (never canonical) --------------------------
-  // The inspector and the wide-viewport flag start deterministic on every
-  // platform so the server and the first client render are identical; the
-  // matchMedia effect below corrects them right after hydration.
+  // Inspector intent starts as 'default' so SSR and the first client paint
+  // match (desktop column). matchMedia only flips presentation: a fresh
+  // narrow viewport settles closed; an explicit open/close survives resize.
   const [toolMode, setToolMode] = useState<ToolMode>('select');
   const [pendingShapeGeometry, setPendingShapeGeometry] = useState<ShapeGeometry>(DEFAULT_SHAPE_GEOMETRY);
   const [fitScale, setFitScale] = useState(1);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorIntent, setInspectorIntent] = useState<InspectorIntent>('default');
   const [drawer, setDrawer] = useState<DrawerKind | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuEpoch, setMenuEpoch] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | undefined>(undefined);
 
@@ -111,22 +120,38 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
   const activeSlide = snapshot.presentation.slides[activeSlideId];
   const selectedIds = snapshot.session.selectedElementIds;
 
-  // Collapse the inspector on narrow viewports so the canvas keeps its room;
-  // the breakpoint is the registry's one inspector fact, so the toggle never
-  // renders inline while the panel cannot open.
   const [wideViewport, setWideViewport] = useState(true);
+  const inspectorRestoreRef = useRef<HTMLElement | null>(null);
+  const overlayStateRef = useRef({ drawer, intent: inspectorIntent });
+  overlayStateRef.current = { drawer, intent: inspectorIntent };
   useEffect(() => {
-    const media = window.matchMedia(`(max-width: ${INSPECTOR_MIN_VIEWPORT - 1}px)`);
-    const update = (): void => setWideViewport(!media.matches);
-    update();
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
+    const media = window.matchMedia(`(max-width: ${INSPECTOR_INLINE_VIEWPORT - 1}px)`);
+    const apply = (): void => {
+      const next = viewportChangeTransition({
+        drawer: overlayStateRef.current.drawer,
+        intent: overlayStateRef.current.intent,
+        wide: !media.matches,
+      });
+      setWideViewport(next.wideViewport);
+      if (next.drawer !== overlayStateRef.current.drawer) {
+        setDrawer(next.drawer);
+      }
+      if (next.dismissTransientMenus) {
+        setPaletteOpen(false);
+        setMenuOpen(false);
+        setMenuEpoch((epoch) => epoch + 1);
+      }
+    };
+    apply();
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
   }, []);
-  useEffect(() => {
-    if (!wideViewport) {
-      setInspectorOpen(false);
-    }
-  }, [wideViewport]);
+
+  const { inspectorOpen, inspectorInline, inspectorOverlay } = deriveShellChrome({
+    intent: inspectorIntent,
+    presenting,
+    wideViewport,
+  });
 
   // Route is a projection of session.activeSlideId. Equality first so the
   // initial POP load is idle. A POP whose route id actually moved is inbound
@@ -163,8 +188,9 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
     workspaceId,
   ]);
 
-  // Render-time exclusivity is `!presenting` on the drawer/palette JSX below.
-  // This effect only clears their React state so they do not return on exit.
+  // Render-time exclusivity is `!presenting` on the drawer/palette JSX and
+  // overlay chrome. This effect only clears drawer/palette React state so
+  // they do not return on exit. Inspector intent survives Present.
   useEffect(() => {
     if (!presenting) {
       return;
@@ -397,6 +423,57 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
     store.setZoom(1);
   }
 
+  function dismissTransientMenus(): void {
+    setPaletteOpen(false);
+    setMenuOpen(false);
+    setMenuEpoch((epoch) => epoch + 1);
+  }
+
+  function captureInspectorOpener(): HTMLElement | null {
+    const active = document.activeElement;
+    const kind = overlayOpenerFromMenuState({
+      expandedMore: document.querySelector('[aria-label="More commands"][aria-expanded="true"]') !== null,
+      expandedReview: document.querySelector('[aria-label="Review panels"][aria-expanded="true"]') !== null,
+      fromMenu: document.querySelector('[role="menu"]') !== null,
+    });
+    if (kind === 'more') {
+      return document.querySelector('[aria-label="More commands"]');
+    }
+    if (kind === 'review') {
+      return document.querySelector('[aria-label="Review panels"]');
+    }
+    return active instanceof HTMLElement && active !== document.body ? active : null;
+  }
+
+  function closeInspector(): void {
+    setInspectorIntent('closed');
+  }
+
+  function toggleInspector(): void {
+    const next = toggleInspectorTransition({ drawer, inspectorOpen, wideViewport });
+    if (next.intent === 'open') {
+      inspectorRestoreRef.current = captureInspectorOpener();
+    }
+    setInspectorIntent(next.intent);
+    if (next.drawer !== drawer) {
+      setDrawer(next.drawer);
+    }
+    if (next.dismissTransientMenus) {
+      dismissTransientMenus();
+    }
+  }
+
+  function toggleDrawer(kind: DrawerKind): void {
+    const next = toggleDrawerTransition({ drawer, kind, wideViewport });
+    setDrawer(next.drawer);
+    if (next.inspectorIntent !== undefined) {
+      setInspectorIntent(next.inspectorIntent);
+    }
+    if (next.dismissTransientMenus) {
+      dismissTransientMenus();
+    }
+  }
+
   // --- The one command context --------------------------------------------------------
 
   const primaryId = selectedIds[0];
@@ -425,7 +502,6 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       toolMode,
       inspectorOpen,
       zoomPercent,
-      inspectorSupported: wideViewport,
       undoAvailable: snapshot.userUndoStack.length > 0,
       redoAvailable: snapshot.userRedoStack.length > 0,
       notify,
@@ -449,8 +525,8 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         zoomIn,
         zoomOut,
         zoomFit,
-        toggleInspector: () => setInspectorOpen((current) => !current),
-        toggleDrawer: (kind) => setDrawer((current) => (current === kind ? null : kind)),
+        toggleInspector,
+        toggleDrawer,
         exportPptx: exportPresentation,
       },
     }),
@@ -458,6 +534,7 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       activeSlide,
       env,
       inspectorOpen,
+      inspectorIntent,
       notify,
       pendingShapeGeometry,
       primaryElement,
@@ -467,22 +544,25 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       store,
       toolMode,
       wideViewport,
+      drawer,
       zoomPercent,
     ],
   );
 
   // --- Keyboard controller: one owner order. An editable target owns
   // ordinary editing keys (including Mod+K). Escape still closes a live
-  // modal (Present, palette, drawer). Every other shortcut is the registry
-  // 'keys' surface, and only fires outside editable targets. ---------------
+  // modal (Present, palette, drawer, inspector overlay). Every other
+  // shortcut is the registry 'keys' surface, and only fires outside
+  // editable targets. ---------------
 
   const keyboardRef = useRef({
     drawer: null as DrawerKind | null,
+    inspectorOverlay: false,
     menuOpen: false,
     paletteOpen: false,
     presenting: false,
   });
-  keyboardRef.current = { drawer, menuOpen, paletteOpen, presenting };
+  keyboardRef.current = { drawer, inspectorOverlay, menuOpen, paletteOpen, presenting };
   const ctxRef = useRef<CommandContext | null>(null);
   ctxRef.current = ctx;
 
@@ -502,8 +582,8 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
 
       if (event.key === 'Escape') {
         // Modal Escape is the one exception to editable ownership: Present,
-        // the palette, and a drawer must still close themselves. The title
-        // input preventDefault's its own Escape before this listener.
+        // the palette, and a right overlay still close — unless a dirty
+        // inspector field already consumed the event (preventDefault).
         if (kb.presenting) {
           event.preventDefault();
           store.controlPresentation({ action: 'exit' });
@@ -517,6 +597,11 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
         if (kb.drawer) {
           event.preventDefault();
           setDrawer(null);
+          return;
+        }
+        if (kb.inspectorOverlay) {
+          event.preventDefault();
+          setInspectorIntent('closed');
           return;
         }
         if (!editable) {
@@ -542,8 +627,9 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       }
 
       // Modals and transient owners suppress the registry shortcuts: open
-      // menus, the palette, drawers, and Present mode own their keys.
-      if (kb.presenting || kb.paletteOpen || kb.drawer || kb.menuOpen) {
+      // menus, the palette, drawers, the inspector overlay, and Present mode
+      // own their keys.
+      if (kb.presenting || kb.paletteOpen || kb.drawer || kb.inspectorOverlay || kb.menuOpen) {
         return;
       }
       // A focused resize handle owns its keys (keyboard resize); keyboard
@@ -593,8 +679,9 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       <EditorHeader
         activeDrawer={drawer}
         canExport
+        menuEpoch={menuEpoch}
         onExport={exportPresentation}
-        onOpenDrawer={(kind) => setDrawer((current) => (current === kind ? null : kind))}
+        onOpenDrawer={ctx.actions.toggleDrawer}
         onPresent={() => store.controlPresentation({ action: 'start' })}
         onRenamePresentation={renamePresentation}
         openCommentCount={openCommentCount}
@@ -605,16 +692,19 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
       />
       <CommandBar
         ctx={ctx}
+        menuEpoch={menuEpoch}
         onPendingShapeGeometryChange={setPendingShapeGeometry}
         pendingShapeGeometry={pendingShapeGeometry}
       />
 
-      <div className={`editor-main${inspectorOpen && wideViewport ? '' : ' inspector-closed'}`}>
+      <div className="editor-shell">
+        <div className="editor-main">
         <SlideRail ctx={ctx} onOpenSlide={openEditorSlide} />
         <section aria-label="Canvas" className="canvas-column">
           <CanvasStage
             ctx={ctx}
-            keyboardEnabled={!paletteOpen && !drawer && !presenting && !menuOpen}
+            keyboardEnabled={!paletteOpen && !drawer && !inspectorOverlay && !presenting && !menuOpen}
+            menuOpen={menuOpen}
             notify={notify}
             onFitScaleChange={setFitScale}
             onMenuOpenChange={setMenuOpen}
@@ -627,15 +717,23 @@ function Workspace({ store, workspaceId }: { store: PresentationStore; workspace
             zoom={zoom}
           />
         </section>
-        {inspectorOpen && wideViewport ? (
-          <InspectorPanel
-            notify={notify}
-            primaryId={primaryId}
-            selectedIds={selectedIds}
-            slideId={activeSlide.id}
-            snapshot={snapshot}
-            store={store}
-          />
+        </div>
+        {inspectorOpen && (inspectorInline || !presenting) ? (
+          <InspectorFrame
+            onClose={closeInspector}
+            overlay={inspectorOverlay}
+            restoreFocusRef={inspectorRestoreRef}
+          >
+            <InspectorPanel
+              notify={notify}
+              onClose={inspectorOverlay ? closeInspector : undefined}
+              primaryId={primaryId}
+              selectedIds={selectedIds}
+              slideId={activeSlide.id}
+              snapshot={snapshot}
+              store={store}
+            />
+          </InspectorFrame>
         ) : null}
       </div>
 

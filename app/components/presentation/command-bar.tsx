@@ -22,8 +22,8 @@ export type { ToolMode } from './command-registry';
 /**
  * The session command bar: history, canvas tools (Select / Text / Shape with
  * a geometry menu), zoom, and inspector. Object commands live on the
- * selection action bar. The deterministic planner (`planToolbarLayout`) only
- * sheds the inspector toggle below the panel's own viewport threshold.
+ * selection action bar. The deterministic planner (`planToolbarLayout`) sheds
+ * the inspector toggle to overflow below the inline-column viewport.
  */
 
 const CLUSTER_SEQUENCE: ReadonlyArray<{ cluster: BarCluster; dividerBefore?: boolean }> = [
@@ -33,10 +33,12 @@ const CLUSTER_SEQUENCE: ReadonlyArray<{ cluster: BarCluster; dividerBefore?: boo
 
 export function CommandBar({
   ctx,
+  menuEpoch,
   onPendingShapeGeometryChange,
   pendingShapeGeometry,
 }: {
   ctx: CommandContext;
+  menuEpoch: number;
   onPendingShapeGeometryChange: (geometry: ShapeGeometry) => void;
   pendingShapeGeometry: ShapeGeometry;
 }) {
@@ -85,6 +87,7 @@ export function CommandBar({
             ctx={ctx}
             dividerBefore={dividerBefore}
             key={cluster}
+            menuEpoch={menuEpoch}
             onPendingShapeGeometryChange={onPendingShapeGeometryChange}
             pendingShapeGeometry={pendingShapeGeometry}
             platform={platform}
@@ -113,7 +116,7 @@ export function CommandBar({
       ))}
 
       {plan.overflow.length > 0 ? (
-        <OverflowMenu commands={plan.overflow} ctx={ctx} platform={platform} />
+        <OverflowMenu commands={plan.overflow} ctx={ctx} menuEpoch={menuEpoch} platform={platform} />
       ) : null}
     </div>
   );
@@ -124,6 +127,7 @@ function BarClusterGroup({
   commands,
   ctx,
   dividerBefore,
+  menuEpoch,
   onPendingShapeGeometryChange,
   pendingShapeGeometry,
   platform,
@@ -132,6 +136,7 @@ function BarClusterGroup({
   commands: readonly CommandListItem[];
   ctx: CommandContext;
   dividerBefore?: boolean;
+  menuEpoch: number;
   onPendingShapeGeometryChange: (geometry: ShapeGeometry) => void;
   pendingShapeGeometry: ShapeGeometry;
   platform: 'mac' | 'other';
@@ -147,6 +152,7 @@ function BarClusterGroup({
                 command={command}
                 ctx={ctx}
                 key={command.id}
+                menuEpoch={menuEpoch}
                 onPendingShapeGeometryChange={onPendingShapeGeometryChange}
                 pendingShapeGeometry={pendingShapeGeometry}
                 platform={platform}
@@ -196,17 +202,20 @@ function ToolRadio({
 function ShapeSplitTool({
   command,
   ctx,
+  menuEpoch,
   onPendingShapeGeometryChange,
   pendingShapeGeometry,
   platform,
 }: {
   command: CommandListItem;
   ctx: CommandContext;
+  menuEpoch: number;
   onPendingShapeGeometryChange: (geometry: ShapeGeometry) => void;
   pendingShapeGeometry: ShapeGeometry;
   platform: 'mac' | 'other';
 }) {
   const tooltip = commandTooltip(command, ctx, command.state, platform);
+  const [shapeMenuOpen, setShapeMenuOpen] = useDismissableMenuOpen(menuEpoch);
   return (
     <div className="tool-split">
       <Tooltip content={tooltip}>
@@ -221,7 +230,7 @@ function ShapeSplitTool({
           {command.label}
         </button>
       </Tooltip>
-      <Menu.Root>
+      <Menu.Root onOpenChange={setShapeMenuOpen} open={shapeMenuOpen}>
         <Tooltip content="Shape geometry">
           <Menu.Trigger
             aria-label="Shape geometry"
@@ -276,6 +285,7 @@ function BarCommandButton({
   const checked = command.isChecked?.(ctx) ?? false;
   const disabled = command.state === 'disabled';
   const tooltip = commandTooltip(command, ctx, command.state, platform);
+  const label = command.labelText ? command.labelText(ctx) : command.label;
   const classes = ['cmd-button'];
   if (checked) {
     classes.push('is-active');
@@ -296,7 +306,7 @@ function BarCommandButton({
           type="button"
         >
           <CommandIcon icon={command.icon} />
-          <span>{command.label}</span>
+          <span>{label}</span>
         </button>
       </Tooltip>
     </>
@@ -368,17 +378,35 @@ function ZoomButton({
   );
 }
 
+/**
+ * Occupying a right-side overlay increments `menuEpoch`. Resetting `open`
+ * during that render closes the popup in the same commit without remounting
+ * the trigger, so overlay focus restore still has a connected opener.
+ */
+function useDismissableMenuOpen(epoch: number): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(false);
+  const [seenEpoch, setSeenEpoch] = useState(epoch);
+  if (seenEpoch !== epoch) {
+    setSeenEpoch(epoch);
+    setOpen(false);
+  }
+  return [open, setOpen];
+}
+
 function OverflowMenu({
   commands,
   ctx,
+  menuEpoch,
   platform,
 }: {
   commands: readonly CommandListItem[];
   ctx: CommandContext;
+  menuEpoch: number;
   platform: 'mac' | 'other';
 }) {
+  const [open, setOpen] = useDismissableMenuOpen(menuEpoch);
   return (
-    <Menu.Root>
+    <Menu.Root onOpenChange={setOpen} open={open}>
       <Tooltip content="More commands">
         <Menu.Trigger
           aria-label="More commands"
@@ -391,22 +419,47 @@ function OverflowMenu({
       <Menu.Portal>
         <Menu.Positioner className="popup-positioner" align="end" sideOffset={4}>
           <Menu.Popup className="bar-menu">
-            {commands.map((command) => (
-              <Menu.Item
-                className={`bar-menu-item${command.dangerous ? ' is-danger' : ''}`}
-                disabled={command.state === 'disabled'}
-                key={command.id}
-                onClick={() => command.run(ctx)}
-              >
-                <CommandIcon className="bar-menu-icon" icon={command.icon} />
-                <span>{command.label}</span>
-                {command.shortcut ? (
-                  <span aria-label="Shortcut" className="bar-menu-key">
-                    {formatShortcut(command.shortcut, platform)}
-                  </span>
-                ) : null}
-              </Menu.Item>
-            ))}
+            {commands.map((command) => {
+              const label = command.labelText ? command.labelText(ctx) : command.label;
+              if (command.labelText) {
+                const checked = command.isChecked?.(ctx) ?? false;
+                return (
+                  <Menu.CheckboxItem
+                    checked={checked}
+                    className={`bar-menu-item${checked ? ' is-active' : ''}${command.dangerous ? ' is-danger' : ''}`}
+                    closeOnClick
+                    disabled={command.state === 'disabled'}
+                    key={command.id}
+                    label={label}
+                    onCheckedChange={() => command.run(ctx)}
+                  >
+                    <CommandIcon className="bar-menu-icon" icon={command.icon} />
+                    <span>{label}</span>
+                    {command.shortcut ? (
+                      <span aria-label="Shortcut" className="bar-menu-key">
+                        {formatShortcut(command.shortcut, platform)}
+                      </span>
+                    ) : null}
+                  </Menu.CheckboxItem>
+                );
+              }
+              return (
+                <Menu.Item
+                  className={`bar-menu-item${command.dangerous ? ' is-danger' : ''}`}
+                  disabled={command.state === 'disabled'}
+                  key={command.id}
+                  onClick={() => command.run(ctx)}
+                >
+                  <CommandIcon className="bar-menu-icon" icon={command.icon} />
+                  <span>{label}</span>
+                  {command.shortcut ? (
+                    <span aria-label="Shortcut" className="bar-menu-key">
+                      {formatShortcut(command.shortcut, platform)}
+                    </span>
+                  ) : null}
+                </Menu.Item>
+              );
+            })}
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

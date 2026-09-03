@@ -31,6 +31,7 @@ import {
   STROKE_DASH_OPTIONS,
   switchGeometryTo,
 } from './shape-style-utils';
+import { consumeDirtyInspectorEscape } from './shell-overlay';
 import { slideDisplayName } from './slide-label';
 
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
@@ -62,6 +63,7 @@ const FONT_WEIGHTS: ReadonlyArray<400 | 500 | 600 | 700 | 800> = [400, 500, 600,
  */
 export function InspectorPanel({
   notify,
+  onClose,
   primaryId,
   selectedIds,
   slideId,
@@ -69,6 +71,7 @@ export function InspectorPanel({
   store,
 }: {
   notify: (message: string) => void;
+  onClose?: () => void;
   primaryId?: string;
   selectedIds: readonly string[];
   slideId: string;
@@ -134,7 +137,7 @@ export function InspectorPanel({
   }
 
   return (
-    <aside aria-label="Inspector" className="inspector-panel">
+    <div className="inspector-panel" data-inspector-root>
       <div className="inspector-headline">
         {selectedElement ? (
           <>
@@ -145,6 +148,11 @@ export function InspectorPanel({
         ) : (
           <strong>{slideDisplayName(slide)}</strong>
         )}
+        {onClose ? (
+          <button aria-label="Close inspector" className="drawer-close" onClick={onClose} type="button">
+            <span aria-hidden="true">✕</span>
+          </button>
+        ) : null}
       </div>
       <div className="inspector-scroll">
         {selectedIds.length === 0 ? (
@@ -212,7 +220,7 @@ export function InspectorPanel({
           </section>
         ) : null}
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -381,7 +389,12 @@ function SlideProperties({
                 if (event.key === 'Enter') {
                   event.preventDefault();
                   void commitName();
+                  return;
                 }
+                consumeDirtyInspectorEscape(event, nameEdited, () => {
+                  setNameDraft(slide.name);
+                  setNameEdited(false);
+                });
               }}
               value={nameDraft}
             />
@@ -414,7 +427,13 @@ function SlideProperties({
                   if (event.key === 'Enter') {
                     event.preventDefault();
                     void commitBackgroundHex();
+                    return;
                   }
+                  consumeDirtyInspectorEscape(event, backgroundEdited, () => {
+                    setBackgroundDraft(slide.background);
+                    setPickedBackground(null);
+                    setBackgroundEdited(false);
+                  });
                 }}
                 spellCheck={false}
                 type="text"
@@ -432,6 +451,12 @@ function SlideProperties({
             onChange={(event) => {
               beginNotesEdit();
               setNotesDraft(event.currentTarget.value);
+            }}
+            onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+              consumeDirtyInspectorEscape(event, notesEdited, () => {
+                setNotesDraft(slide.notes ?? '');
+                setNotesEdited(false);
+              });
             }}
             placeholder="Speaker notes for this slide…"
             rows={3}
@@ -523,7 +548,12 @@ function TextContentField({
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
               event.preventDefault();
               void commit();
+              return;
             }
+            consumeDirtyInspectorEscape(event, dirty, () => {
+              setDraft(baseText);
+              setDirty(false);
+            });
           }}
           rows={4}
           value={draft}
@@ -758,7 +788,12 @@ function TypographySection({
               if (event.key === 'Enter') {
                 event.preventDefault();
                 void commitSize();
+                return;
               }
+              consumeDirtyInspectorEscape(event, sizeEdited, () => {
+                setSizeDraft(String(style.fontSize));
+                setSizeEdited(false);
+              });
             }}
             step={1}
             type="number"
@@ -797,7 +832,12 @@ function TypographySection({
               if (event.key === 'Enter') {
                 event.preventDefault();
                 void commitLineHeight();
+                return;
               }
+              consumeDirtyInspectorEscape(event, lineHeightEdited, () => {
+                setLineHeightDraft(String(style.lineHeight ?? 1.4));
+                setLineHeightEdited(false);
+              });
             }}
             step={0.1}
             type="number"
@@ -818,7 +858,12 @@ function TypographySection({
               if (event.key === 'Enter') {
                 event.preventDefault();
                 void commitLetterSpacing();
+                return;
               }
+              consumeDirtyInspectorEscape(event, letterSpacingEdited, () => {
+                setLetterSpacingDraft(String(style.letterSpacing ?? 0));
+                setLetterSpacingEdited(false);
+              });
             }}
             step={0.1}
             type="number"
@@ -853,7 +898,13 @@ function TypographySection({
                 if (event.key === 'Enter') {
                   event.preventDefault();
                   void commitColor();
+                  return;
                 }
+                consumeDirtyInspectorEscape(event, colorEdited, () => {
+                  setHexDraft(style.color);
+                  setPickedColor(null);
+                  setColorEdited(false);
+                });
               }}
               spellCheck={false}
               value={hexDraft}
@@ -976,15 +1027,14 @@ function ShapeStyleFields({
     setEdited(false);
   }
 
-  /** Escape on a numeric/color input: cancel the session, keep focus local. */
+  /** Escape on a numeric/color input: cancel a dirty session and consume the key. */
   function handleFieldKeyDown(event: ReactKeyboardEvent<HTMLInputElement>): void {
     if (event.key === 'Enter') {
       event.preventDefault();
       void commit();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEdit();
+      return;
     }
+    consumeDirtyInspectorEscape(event, edited, cancelEdit);
   }
 
   // --- Complete-style assembly (the kernel owns validation) -----------------
@@ -1512,7 +1562,16 @@ function FrameFields({
                 if (event.key === 'Enter') {
                   event.preventDefault();
                   void commitField(field);
+                  return;
                 }
+                consumeDirtyInspectorEscape(event, touched.has(field), () => {
+                  setDraft((current) => ({ ...current, [field]: canonical[field] }));
+                  setTouched((current) => {
+                    const next = new Set(current);
+                    next.delete(field);
+                    return next;
+                  });
+                });
               }}
               step={1}
               type="number"

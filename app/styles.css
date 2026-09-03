@@ -158,15 +158,28 @@ select:focus-visible,
   background: var(--background);
 }
 
-.editor-main {
-  display: grid;
-  grid-template-columns: 188px minmax(0, 1fr) 268px;
+.editor-shell {
+  display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
-.editor-main.inspector-closed {
+.editor-main {
+  display: grid;
   grid-template-columns: 188px minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.inspector-dock {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 268px;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* --- Compact interactive baseline ------------------------------------------ */
@@ -1278,10 +1291,21 @@ select:focus-visible,
   background: var(--surface);
 }
 
+.inspector-dock .inspector-panel,
+.inspector-overlay .inspector-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.inspector-overlay .inspector-panel {
+  border-left: 0;
+}
+
 .inspector-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .inspector-section {
@@ -1508,6 +1532,11 @@ select:focus-visible,
   border-bottom: 1px solid var(--line);
 }
 
+.inspector-headline .drawer-close {
+  margin-left: auto;
+  flex: none;
+}
+
 .inspector-headline strong {
   overflow: hidden;
   color: var(--text-primary);
@@ -1548,10 +1577,13 @@ select:focus-visible,
 
 /* --- Drawers (Agent / Comments / Activity) --------------------------------------- */
 
+/* The scrim is the modal owner: it covers the full viewport so header and
+ * command chrome cannot open a popup through a live dialog. The panel keeps
+ * its 84px offset (header + command bar) and sits one layer above the scrim. */
 .drawer-scrim {
   position: fixed;
-  inset: 84px 0 0;
-  z-index: 30;
+  inset: 0;
+  z-index: 32;
   background: color-mix(in srgb, var(--background) 55%, transparent);
 }
 
@@ -1560,7 +1592,7 @@ select:focus-visible,
   top: 84px;
   right: 0;
   bottom: 0;
-  z-index: 31;
+  z-index: 33;
   display: flex;
   flex-direction: column;
   width: min(356px, 88vw);
@@ -1568,6 +1600,11 @@ select:focus-visible,
   background: var(--surface);
   box-shadow: -14px 0 36px rgba(0, 0, 0, 0.22);
   animation: drawer-in 150ms ease-out;
+}
+
+/* Narrow inspector: same overlay chrome as review drawers, inline column width. */
+.inspector-overlay {
+  width: min(268px, 88vw);
 }
 
 @keyframes drawer-in {
@@ -1620,6 +1657,7 @@ select:focus-visible,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 14px 18px;
 }
 
@@ -2577,12 +2615,13 @@ select:focus-visible,
  * same Add slide action) so the canvas owns the full width and stays the
  * dominant working surface; the status bar compacts to one priority line; the
  * command bar keeps its width-tier planner, which already sheds the inspector
- * toggle below 1200px. Object commands sit on the selection action bar. Every desktop surface
+ * toggle to overflow below 1200px — that command stays enabled and opens the
+ * inspector as an overlay so the canvas is never crushed. Object commands sit
+ * on the selection action bar. Every desktop surface
  * stays present — nothing is hidden by overflow, nothing loses its action.
  */
 @media (max-width: 720px) {
-  .editor-main,
-  .editor-main.inspector-closed {
+  .editor-main {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }

@@ -110,12 +110,13 @@ export function CanvasStage({
   store,
   toolMode,
   zoom,
+  menuOpen,
 }: {
   ctx: CommandContext;
   keyboardEnabled: boolean;
   notify: (message: string) => void;
   onFitScaleChange: (scale: number) => void;
-  onMenuOpenChange?: (open: boolean) => void;
+  onMenuOpenChange: (open: boolean) => void;
   onToolModeChange: (mode: ToolMode) => void;
   selectedIds: readonly string[];
   slideId: string;
@@ -123,6 +124,7 @@ export function CanvasStage({
   store: PresentationStore;
   toolMode: ToolMode;
   zoom: number;
+  menuOpen: boolean;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const slideRef = useRef<HTMLDivElement>(null);
@@ -132,6 +134,8 @@ export function CanvasStage({
   selectedIdsRef.current = selectedIds;
   const keyboardEnabledRef = useRef(keyboardEnabled);
   keyboardEnabledRef.current = keyboardEnabled;
+  const menuOpenRef = useRef(menuOpen);
+  menuOpenRef.current = menuOpen;
   const creating = toolMode !== 'select';
   const selectionBarObserverRef = useRef<ResizeObserver | null>(null);
   const [selectionBarSize, setSelectionBarSize] = useState({
@@ -165,9 +169,6 @@ export function CanvasStage({
     };
   }, []);
 
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuOpenRef = useRef(menuOpen);
-  menuOpenRef.current = menuOpen;
   const [menuTarget, setMenuTarget] = useState<CanvasMenuTarget | null>(null);
   const menuTargetRef = useRef(menuTarget);
   menuTargetRef.current = menuTarget;
@@ -688,8 +689,7 @@ export function CanvasStage({
   }
 
   function handleMenuOpenChange(open: boolean): void {
-    setMenuOpen(open);
-    onMenuOpenChange?.(open);
+    onMenuOpenChange(open);
   }
 
   /**
@@ -887,6 +887,7 @@ export function CanvasStage({
           finalFocus={contextMenuFinalFocus}
           onContextMenu={handleContextMenu}
           onOpenChange={handleMenuOpenChange}
+          open={menuOpen}
           render={
             <div
               className="slide-frame"
