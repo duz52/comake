@@ -11,6 +11,9 @@ CLAUDE.md
 .claude/
 /internal/
 
+# Tests
+/tests/.build/
+
 # React Router
 /.react-router/
 /build/

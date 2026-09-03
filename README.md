@@ -186,10 +186,30 @@ Then run and validate:
 
 ```bash
 pnpm dev
+pnpm test
 pnpm typecheck
 pnpm run build
 pnpm run deploy:dry-run
 ```
+
+## Testing
+
+```bash
+pnpm test
+```
+
+`pnpm test` type-checks and compiles the tests together with the production modules they import, then runs the compiled files with Node's built-in test runner. It does not need a running server, generated route types, or Cloudflare credentials.
+
+The suite covers:
+
+- canonical document invariants, revisions, change sets, shape validation, and PPTX/OOXML export
+- `PresentationStore` transport serialization (accepted writes, stale revisions, transport errors, concurrent order)
+- session-owned slideshow control
+- native WebMCP `control_presentation`
+- session-to-route projection
+- Inspector chrome state (`InspectorIntent`, inline vs overlay, drawer exclusivity, dirty Escape)
+
+`pnpm typecheck` remains the production type-check. `pnpm test` type-checks the test graph on its own.
 
 ## Deploy
 

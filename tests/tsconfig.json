@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": ["node"],
+    "composite": true,
+    "declaration": true,
+    "rootDir": "..",
+    "outDir": ".build",
+    "tsBuildInfoFile": ".build/tsconfig.tsbuildinfo"
+  },
+  "include": [
+    "./**/*.ts",
+    "../app/lib/presentation/**/*.ts",
+    "../app/types/**/*.ts",
+    "../app/components/presentation/**/*.ts"
+  ],
+  "exclude": [".build"]
+}

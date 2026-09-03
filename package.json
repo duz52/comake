@@ -14,7 +14,8 @@
     "deploy": "pnpm run build && wrangler deploy",
     "deploy:dry-run": "pnpm run build && wrangler deploy --dry-run",
     "preview": "vite preview",
-    "typecheck": "wrangler types && react-router typegen && tsc -b"
+    "typecheck": "wrangler types && react-router typegen && tsc -b",
+    "test": "tsc -b tests --clean && tsc -b tests && node --test \"tests/.build/**/*.test.js\""
   },
   "dependencies": {
     "@base-ui/react": "1.6.0",
